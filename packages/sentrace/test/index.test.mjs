@@ -24,17 +24,17 @@ const repoRoot = path.resolve(pkgRoot, "../..");
 const require = createRequire(import.meta.url);
 const SentraceCjs = require("../dist/index.cjs");
 
-test("ESM dist/index.mjs exports 0.1.0 and delivers Sentry v7 envelopes end-to-end", async () => {
+test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-end", async () => {
   resetClient();
-  assert.equal(VERSION, "0.1.0");
-  assert.equal(SentraceDefault.VERSION, "0.1.0");
+  assert.equal(VERSION, "0.1.1");
+  assert.equal(SentraceDefault.VERSION, "0.1.1");
   assert.equal(getConfig(), null);
 
   const delivered = [];
   const cfg = init({
     dsn: "https://pub123@errors.example.com/sentrace/1",
     environment: "staging",
-    release: "v0.1.0",
+    release: "v0.1.1",
     autoInstrumentBrowser: false,
     railsIntegration: false,
     transport: () => ({
@@ -97,8 +97,8 @@ test("ESM dist/index.mjs exports 0.1.0 and delivers Sentry v7 envelopes end-to-e
 
 test("CommonJS dist/index.cjs exports matching API", async () => {
   SentraceCjs.resetClient();
-  assert.equal(SentraceCjs.VERSION, "0.1.0");
-  assert.equal(SentraceCjs.default.VERSION, "0.1.0");
+  assert.equal(SentraceCjs.VERSION, "0.1.1");
+  assert.equal(SentraceCjs.default.VERSION, "0.1.1");
 
   const cfg = SentraceCjs.init({
     dsn: "http://pub@localhost:3000/sentrace/1",
@@ -147,7 +147,7 @@ test("IIFE dist/sentrace.browser.js attaches window.Sentrace cleanly and matches
 
   vm.runInNewContext(browserCode, sandbox);
   assert.ok(sandbox.Sentrace);
-  assert.equal(sandbox.Sentrace.VERSION, "0.1.0");
+  assert.equal(sandbox.Sentrace.VERSION, "0.1.1");
 
   const envelopes = [];
   sandbox.Sentrace.init({

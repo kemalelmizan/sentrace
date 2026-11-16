@@ -20,7 +20,7 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
   assert.equal(formatPublicDsn(dsn), "https://pub_abc123@errors.example.com:8443/sentrace/42");
   assert.equal(
     buildEnvelopeEndpoint(dsn),
-    "https://errors.example.com:8443/sentrace/api/42/envelope?sentry_key=pub_abc123&sentry_version=7&sentry_client=sentrace-js%2F0.1.0"
+    "https://errors.example.com:8443/sentrace/api/42/envelope?sentry_key=pub_abc123&sentry_version=7&sentry_client=sentrace-js%2F0.1.1"
   );
 
   assert.equal(parseDsn("not-a-dsn"), null);
