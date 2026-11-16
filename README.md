@@ -40,6 +40,27 @@ bin/rails "sentrace:projects:create[my-app]"
 bin/rails "sentrace:projects:rotate_key[my-app]"
 ```
 
+## Local MCP Server (`stdio`)
+
+Run the standalone Sentrace MCP server over `stdio` (no running Rails web server required):
+
+```bash
+bin/rails sentrace:mcp
+```
+
+Example MCP client configuration (`.mcp.json` / Claude Code / Cursor / Antigravity):
+
+```json
+{
+  "mcpServers": {
+    "sentrace": {
+      "command": "bin/rails",
+      "args": ["sentrace:mcp"]
+    }
+  }
+}
+```
+
 ## Development Workflow (OpenSpec)
 
 This repository uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) (`spec-driven` schema) for specification-driven development:

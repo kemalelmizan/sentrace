@@ -7,11 +7,11 @@
 
 ## 2. MCP Server Tools, Read-Only Resources & Investigation Prompt
 
-- [ ] 2.1 Implement `Sentrace::Mcp::Server` (`lib/sentrace/mcp/server.rb`) wrapping the `mcp` gem (`MCP::Server`) to register all 8 tools (`list_environments`, `list_projects`, `list_issues`, `get_issue`, `update_issue_status`, `list_events`, `get_event`, `get_error_trends`), 5 `sentrace://` resources/templates, and the `investigate_issue` prompt (separating observed evidence from hypotheses), and verify JSON-RPC protocol specs pass
+- [x] 2.1 Implement `Sentrace::Mcp::Server` (`lib/sentrace/mcp/server.rb`) wrapping the `mcp` gem (`MCP::Server`) to register all 8 tools (`list_environments`, `list_projects`, `list_issues`, `get_issue`, `update_issue_status`, `list_events`, `get_event`, `get_error_trends`), 5 `sentrace://` resources/templates, and the `investigate_issue` prompt (separating observed evidence from hypotheses), and verify JSON-RPC protocol specs pass
 
 ## 3. Standalone `stdio` Transport & Rake Task
 
-- [ ] 3.1 Implement `Sentrace::Mcp::StdioRunner` (`lib/sentrace/mcp/stdio_runner.rb`) and `bin/rails sentrace:mcp` (`lib/tasks/sentrace_mcp.rake`) with `stdout` log isolation, verify end-to-end `stdio` JSON-RPC round-trip specs (`spec/integration/mcp_stdio_spec.rb`), and document `bin/rails sentrace:mcp` usage in `README.md`
+- [x] 3.1 Implement `Sentrace::Mcp::StdioRunner` (`lib/sentrace/mcp/stdio_runner.rb`) and `bin/rails sentrace:mcp` (`lib/tasks/sentrace_mcp.rake`) with `stdout` log isolation, verify end-to-end `stdio` JSON-RPC round-trip specs (`spec/integration/mcp_stdio_spec.rb`), and document `bin/rails sentrace:mcp` usage in `README.md`
 
 ## Workflow follow-up
 

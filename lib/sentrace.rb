@@ -11,6 +11,8 @@ require "sentrace/issues/grouper"
 require "sentrace/ingestion/processor"
 require "sentrace/mcp/local_backend"
 require "sentrace/mcp/dispatcher"
+require "sentrace/mcp/server"
+require "sentrace/mcp/stdio_runner"
 require "sentrace/engine"
 
 module Sentrace
