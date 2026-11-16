@@ -1,0 +1,41 @@
+# project-management Specification (Delta)
+
+## MODIFIED Requirements
+
+### Requirement: Project key generation, verification, and rotation
+Project provisioning SHALL generate random public keys (or idempotently seed a validated `public_key` via `Project.ensure!` without rotating or duplicating on subsequent boots), store any secret material solely as SHA-256 digests verified in constant time, reject revoked or cross-project keys, and support key rotation by revoking prior active keys and issuing a fresh active key.
+
+#### Scenario: Active public key authenticates its owning project only
+- **GIVEN** project `1` with active key `pub_one` and project `2` with active key `pub_two`
+- **WHEN** `pub_one` is verified against project `1` versus project `2`
+- **THEN** verification succeeds for project `1` and fails for project `2`
+
+#### Scenario: Key rotation revokes previous key and issues a new active key
+- **GIVEN** a project `my-app` with active public key `old_key`
+- **WHEN** key rotation is executed for `my-app`
+- **THEN** `old_key` is marked `active: false` with `revoked_at` populated, a new active key is persisted, and subsequent authentication with `old_key` is rejected
+
+#### Scenario: Declarative Project.ensure! idempotently seeds a pinned public key across boots
+- **WHEN** `Sentrace::Project.ensure!(slug: "core-monolith", public_key: "pub_prod_0123456789abcdef")` is called on first boot and again on subsequent boots
+- **THEN** the project and active `ProjectKey` are created once, subsequent calls return the same `[project, key]` without rotating or duplicating rows, and malformed or cross-project `public_key` values raise `ArgumentError`
+
+### Requirement: Administrative Rake tasks for headless project management
+The engine SHALL expose `bin/rails sentrace:projects`, `bin/rails sentrace:projects:create[slug]`, `bin/rails sentrace:projects:rotate_key[slug]`, and `bin/rails sentrace:bootstrap` (reading optional `SENTRACE_PROJECT_SLUG`, `SENTRACE_PROJECT_PUBLIC_KEY`, `SENTRACE_MCP_TOKEN_NAME`, and `SENTRACE_MCP_TOKEN`) for headless, non-interactive project and credential provisioning.
+
+#### Scenario: Creating a project via Rake outputs project details and DSN
+- **WHEN** an operator runs `bin/rails "sentrace:projects:create[my-app]"`
+- **THEN** a project with slug `my-app` and an active key are created and the CLI prints the project slug, ID, public key, and DSN template
+
+#### Scenario: Listing projects displays status and active key metadata without secrets
+- **GIVEN** two registered projects in the database
+- **WHEN** an operator runs `bin/rails sentrace:projects`
+- **THEN** the output lists each project's ID, slug, name, and active public key without exposing secret digests
+
+#### Scenario: Rotating an unknown project slug fails cleanly
+- **WHEN** an operator runs `bin/rails "sentrace:projects:rotate_key[missing-app]"`
+- **THEN** the task exits non-zero with a clear not-found message and leaves existing project keys unchanged
+
+#### Scenario: Running sentrace:bootstrap idempotently provisions credentials from CI/CD environment variables
+- **GIVEN** `SENTRACE_PROJECT_SLUG="erp-web"`, `SENTRACE_PROJECT_PUBLIC_KEY="erp_pub_1234567890abcdef"`, `SENTRACE_MCP_TOKEN_NAME="prod-mcp"`, and `SENTRACE_MCP_TOKEN="snt_mcp_0123456789abcdef0123456789abcdef"`
+- **WHEN** `bin/rails sentrace:bootstrap` runs twice in non-interactive CI/CD
+- **THEN** both runs exit `0`, persist exactly one active `ProjectKey` and one SHA-256 `McpToken` digest without duplicating or rotating credentials, and never echo the raw `SENTRACE_MCP_TOKEN` to stdout

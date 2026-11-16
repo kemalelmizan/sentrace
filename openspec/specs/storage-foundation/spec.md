@@ -18,7 +18,7 @@ The database schema SHALL define `sentrace_projects` (`name` up to 120 chars, un
 - **THEN** `sentrace_project_keys` stores only the cryptographic digest and never persists a plaintext secret column
 
 ### Requirement: Grouped issue table schema and lifecycle statuses
-The database schema SHALL define `sentrace_issues` with a project foreign key, deterministic `fingerprint` (up to 64 chars), `status` (`unresolved: 0`, `resolved: 1`, `ignored: 2`), `level` (`smallint`), nullable `exception_type` (255 chars) and `message` (1024 chars), `first_seen_at` and `last_seen_at` (`timestamptz`), and `event_count` (`bigint` defaulting to `0`), enforcing uniqueness on `(project_id, fingerprint)`.
+The database schema SHALL define `sentrace_issues` (`project_id`, `fingerprint` <= 64, `status` `unresolved: 0` / `resolved: 1` / `ignored: 2`, `smallint` `level`, nullable `exception_type` <= 255 and `message` <= 1024, `timestamptz` `first_seen_at` and `last_seen_at`, `bigint` `event_count` default `0`), enforcing unique `(project_id, fingerprint)` and validating enums across ActiveRecord `6.1`–`8.x`.
 
 #### Scenario: Duplicate fingerprint within the same project is rejected
 - **GIVEN** an existing issue for project `1` with fingerprint `abc123`
@@ -32,8 +32,8 @@ The database schema SHALL define `sentrace_issues` with a project foreign key, d
 
 #### Scenario: Issue status transitions across supported lifecycle states
 - **GIVEN** an existing issue initialized as `unresolved`
-- **WHEN** its status is updated to `resolved` or `ignored`
-- **THEN** the persisted `smallint` status reflects the selected lifecycle state and rejects unsupported status values
+- **WHEN** its status transitions to `resolved` or `ignored`, or an unsupported status/level such as `:archived` is assigned
+- **THEN** valid transitions persist as `smallint` values and unsupported enum assignments mark the record invalid via ActiveModel validations across ActiveRecord `6.1`, `7.x`, and `8.x` without raising `ArgumentError`
 
 ### Requirement: Bounded JSONB event table schema and deduplication constraint
 The database schema SHALL define `sentrace_events` with foreign keys to project and issue, `event_id` (`char(32)`), `occurred_at` and `received_at` (`timestamptz`), nullable `environment` (64), `release` (128), `platform` (32), `logger` (128), and `culprit` (512), `level` (`smallint`), and `event_data` (`jsonb` not null, default `{}`), enforcing uniqueness on `(project_id, event_id)`.
@@ -53,3 +53,14 @@ The migrations SHALL create composite indexes on `sentrace_issues (project_id, f
 #### Scenario: Schema inspection verifies required indexes and absence of GIN indexes
 - **WHEN** engine migrations are applied to a PostgreSQL database
 - **THEN** all five specified composite indexes exist with matching column order and sort direction, and zero GIN indexes exist on `sentrace_events.event_data`
+
+### Requirement: Rails 6.1+ migration DDL and PostgreSQL 12+ SQL compatibility
+All engine migrations SHALL inherit from `ActiveRecord::Migration[6.1]` and declare timestamp columns via `t.column :<name>, :timestamptz` so migrations execute identically on Rails `6.1`, `7.x`, and `8.x`, and all persistence, retention, statistics, and query SQL MUST execute on `PostgreSQL >= 12` without PostgreSQL 15+ syntax.
+
+#### Scenario: Engine migrations create timestamptz columns on Rails 6.1 through 8.x
+- **WHEN** the five engine migrations run against PostgreSQL `>= 12` under Rails `6.1` or Rails `8.x`
+- **THEN** every timestamp column on `sentrace_projects`, `sentrace_project_keys`, `sentrace_issues`, `sentrace_events`, and `sentrace_mcp_tokens` has SQL type `timestamp with time zone` without using `t.timestamptz`
+
+#### Scenario: Persistence and query SQL avoids PostgreSQL 15-only constructs
+- **WHEN** issue grouping upserts, event deduplication, retention batch deletes, storage stats, and MCP queries execute
+- **THEN** all statements use PostgreSQL `>= 12`-compatible SQL (`ON CONFLICT`, `DATE_TRUNC`, `jsonb` operators) and MUST NOT use `MERGE` or `NULLS NOT DISTINCT`
