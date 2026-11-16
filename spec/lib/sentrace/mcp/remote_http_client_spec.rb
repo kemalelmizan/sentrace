@@ -1,4 +1,5 @@
 require "rails_helper"
+require "net/http"
 
 RSpec.describe Sentrace::Mcp::RemoteHttpClient do
   def build_env(name: :staging, url: "https://staging.example.com/sentrace/mcp", token: "snt_mcp_secret_tok_999", timeout: 2.0)

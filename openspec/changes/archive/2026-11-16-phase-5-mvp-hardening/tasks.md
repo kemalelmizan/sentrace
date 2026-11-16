@@ -10,7 +10,7 @@
 
 ## 3. Repeatable Storage Benchmark, Security Verification & Release Readiness
 
-- [ ] 3.1 Implement `Sentrace::Benchmark::StorageRunner` (`lib/sentrace/benchmark/storage_runner.rb`) and `sentrace:benchmark:storage` Rake task (`lib/tasks/sentrace_benchmark.rake`), add `SPEC.md` §11/§13 performance and security invariant specs (`spec/lib/sentrace/benchmark/storage_runner_spec.rb`, `spec/security/security_invariants_spec.rb`), complete `README.md` documentation and `SPEC.md` §15 acceptance checklist, and verify full RSpec, RuboCop, and benchmark execution
+- [x] 3.1 Implement `Sentrace::Benchmark::StorageRunner` (`lib/sentrace/benchmark/storage_runner.rb`) and `sentrace:benchmark:storage` Rake task (`lib/tasks/sentrace_benchmark.rake`), add `SPEC.md` §11/§13 performance and security invariant specs (`spec/lib/sentrace/benchmark/storage_runner_spec.rb`, `spec/security/security_invariants_spec.rb`), complete `README.md` documentation and `SPEC.md` §15 acceptance checklist, and verify full RSpec, RuboCop, and benchmark execution
 
 ## Workflow follow-up
 

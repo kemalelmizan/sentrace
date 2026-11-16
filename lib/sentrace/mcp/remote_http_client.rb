@@ -1,5 +1,4 @@
 require "json"
-require "net/http"
 require "openssl"
 require "securerandom"
 require "timeout"
@@ -83,7 +82,7 @@ module Sentrace
           @http_requester.call(uri: uri, headers: headers, body: body, timeout: timeout)
         rescue McpError
           raise
-        rescue Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Timeout::Error
+        rescue Timeout::Error
           raise McpRemoteError.new(
             "Timed out after #{env_def.timeout}s querying environment #{env_def.name}",
             environment: env_def.name,
@@ -289,6 +288,7 @@ module Sentrace
         end
 
         def perform_net_http_post(uri:, headers:, body:, timeout:)
+          require "net/http"
           http = Net::HTTP.new(uri.host, uri.port)
           http.use_ssl = (uri.scheme == "https")
           http.open_timeout = timeout

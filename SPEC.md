@@ -1122,23 +1122,23 @@ The repository should include:
 
 The first usable release is complete when:
 
-- [ ] A Rails application can install Sentrace as an isolated Engine.
-- [ ] Installation creates the required engine-owned tables.
-- [ ] A project can be created and assigned a DSN.
-- [ ] An official `sentry-ruby` client can send an exception.
-- [ ] Sentrace accepts the Sentry envelope protocol.
-- [ ] Events are normalized and stored in PostgreSQL.
-- [ ] Related events are grouped into issues.
-- [ ] Duplicate event IDs are safely ignored.
-- [ ] Unsupported telemetry does not create database records.
-- [ ] Event payload limits are enforced.
-- [ ] Event retention works.
-- [ ] A local stdio MCP server can query the local deployment.
-- [ ] Remote Streamable HTTP MCP endpoints work.
-- [ ] The local router can federate staging and production.
-- [ ] MCP clients can inspect issues and events.
-- [ ] MCP clients can explicitly resolve or ignore issues.
-- [ ] The storage benchmark produces repeatable results.
+- [x] A Rails application can install Sentrace as an isolated Engine.
+- [x] Installation creates the required engine-owned tables.
+- [x] A project can be created and assigned a DSN.
+- [x] An official `sentry-ruby` client can send an exception.
+- [x] Sentrace accepts the Sentry envelope protocol.
+- [x] Events are normalized and stored in PostgreSQL.
+- [x] Related events are grouped into issues.
+- [x] Duplicate event IDs are safely ignored.
+- [x] Unsupported telemetry does not create database records.
+- [x] Event payload limits are enforced.
+- [x] Event retention works.
+- [x] A local stdio MCP server can query the local deployment.
+- [x] Remote Streamable HTTP MCP endpoints work.
+- [x] The local router can federate staging and production.
+- [x] MCP clients can inspect issues and events.
+- [x] MCP clients can explicitly resolve or ignore issues.
+- [x] The storage benchmark produces repeatable results.
 
 ---
 
