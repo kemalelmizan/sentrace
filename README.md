@@ -11,6 +11,7 @@ See [SPEC.md](SPEC.md) for the full product specification and architecture.
 - Ruby `>= 3.2` (local development standardized on `3.3.13`)
 - Rails `>= 7.1`
 - PostgreSQL `>= 15`
+- Client SDK compatibility: verified against official [`sentry-ruby`](https://github.com/getsentry/sentry-ruby) `5.28.x` (`5.28.1` pinned in integration specs; Envelope protocol v7, raw & `gzip` transport, exceptions, messages, breadcrumbs, stack traces, and safe discarding of unsupported performance/session items)
 
 ## Host Application Installation
 

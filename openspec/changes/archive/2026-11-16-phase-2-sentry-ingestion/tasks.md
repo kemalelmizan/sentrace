@@ -12,8 +12,8 @@
 
 ## 3. Ingestion HTTP Endpoint & Real `sentry-ruby` SDK Compatibility
 
-- [ ] 3.1 Mount `POST /api/:project_id/envelope` on `Sentrace::Engine` (`config/routes.rb`, `app/controllers/sentrace/ingestion_controller.rb`) enforcing pre-parse `max_envelope_size` (`413`), streaming `gzip` inflation bounds (`413`), DSN public-key authentication (`401`), malformed-payload `400` responses, and non-leaking error bodies, and verify request and storage specs pass
-- [ ] 3.2 Add end-to-end SDK compatibility specs (`spec/integration/sentry_ruby_compatibility_spec.rb`) using a real `sentry-ruby` (`5.28.1`) client to verify exception capture, message capture, breadcrumbs, stack traces, release/environment attribution, gzip envelopes, and non-error item discarding, and document pinned SDK compatibility in `README.md`
+- [x] 3.1 Mount `POST /api/:project_id/envelope` on `Sentrace::Engine` (`config/routes.rb`, `app/controllers/sentrace/ingestion_controller.rb`) enforcing pre-parse `max_envelope_size` (`413`), streaming `gzip` inflation bounds (`413`), DSN public-key authentication (`401`), malformed-payload `400` responses, and non-leaking error bodies, and verify request and storage specs pass
+- [x] 3.2 Add end-to-end SDK compatibility specs (`spec/integration/sentry_ruby_compatibility_spec.rb`) using a real `sentry-ruby` (`5.28.1`) client to verify exception capture, message capture, breadcrumbs, stack traces, release/environment attribution, gzip envelopes, and non-error item discarding, and document pinned SDK compatibility in `README.md`
 
 ## Workflow follow-up
 
