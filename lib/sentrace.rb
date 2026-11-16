@@ -2,6 +2,7 @@ require "sentrace/version"
 require "sentrace/errors"
 require "sentrace/configuration"
 require "sentrace/dsn"
+require "sentrace/project_manager"
 require "sentrace/engine"
 
 module Sentrace

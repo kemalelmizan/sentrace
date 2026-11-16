@@ -13,12 +13,12 @@
 
 ## 3. Host Installation Generator & Project Rake Tasks
 
-- [ ] 3.1 Implement `Sentrace::Generators::InstallGenerator` (`lib/generators/sentrace/install/`) with templates to create `config/initializers/sentrace.rb`, mount `Sentrace::Engine` idempotently in `config/routes.rb`, copy engine migrations without duplicates, install project bootstrap instructions, and print the `Sentry.init` snippet, and verify generator specs cover both fresh and repeated runs
-- [ ] 3.2 Implement headless Rake tasks (`lib/tasks/sentrace_projects.rake`) for `sentrace:projects`, `sentrace:projects:create[slug]`, and `sentrace:projects:rotate_key[slug]`, and verify task specs cover project listing without secret exposure, project/DSN creation, key rotation, and clean failure on unknown slugs
+- [x] 3.1 Implement `Sentrace::Generators::InstallGenerator` (`lib/generators/sentrace/install/`) with templates to create `config/initializers/sentrace.rb`, mount `Sentrace::Engine` idempotently in `config/routes.rb`, copy engine migrations without duplicates, install project bootstrap instructions, and print the `Sentry.init` snippet, and verify generator specs cover both fresh and repeated runs
+- [x] 3.2 Implement headless Rake tasks (`lib/tasks/sentrace_projects.rake`) for `sentrace:projects`, `sentrace:projects:create[slug]`, and `sentrace:projects:rotate_key[slug]`, and verify task specs cover project listing without secret exposure, project/DSN creation, key rotation, and clean failure on unknown slugs
 
 ## 4. Phase 1 Cross-Cutting Verification
 
-- [ ] 4.1 Verify full Phase 1 integration across `spec/dummy` (`bin/rails app:db:prepare`, `rtk bundle exec rspec`, and `rtk bundle exec rubocop` with zero offenses) and update `README.md` installation/CLI usage sections to match delivered generators and Rake tasks
+- [x] 4.1 Verify full Phase 1 integration across `spec/dummy` (`bin/rails app:db:prepare`, `rtk bundle exec rspec`, and `rtk bundle exec rubocop` with zero offenses) and update `README.md` installation/CLI usage sections to match delivered generators and Rake tasks
 
 ## Workflow follow-up
 

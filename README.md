@@ -12,6 +12,33 @@ See [SPEC.md](SPEC.md) for the full product specification and architecture.
 - Rails `>= 7.1`
 - PostgreSQL `>= 15`
 
+## Host Application Installation
+
+```bash
+bundle add sentrace
+bin/rails generate sentrace:install
+bin/rails db:migrate
+bin/rails sentrace:setup
+```
+
+Configure `sentry-ruby` with the generated DSN:
+
+```ruby
+Sentry.init do |config|
+  config.dsn = ENV.fetch("SENTRY_DSN")
+  config.environment = Rails.env
+  config.release = ENV["APP_RELEASE"]
+end
+```
+
+## Project & Credential Management
+
+```bash
+bin/rails sentrace:projects
+bin/rails "sentrace:projects:create[my-app]"
+bin/rails "sentrace:projects:rotate_key[my-app]"
+```
+
 ## Development Workflow (OpenSpec)
 
 This repository uses [OpenSpec](https://github.com/Fission-AI/OpenSpec) (`spec-driven` schema) for specification-driven development:
@@ -25,7 +52,6 @@ Useful OpenSpec commands:
 
 ```bash
 openspec list
-openspec status --change phase-1-engine-foundation
 openspec validate --all --strict --no-interactive
 ```
 

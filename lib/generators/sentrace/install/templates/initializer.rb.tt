@@ -1,0 +1,34 @@
+Sentrace.configure do |config|
+  config.enabled = ENV.fetch("SENTRACE_ENABLED", "true") == "true"
+
+  config.retention_period = 30.days
+  config.orphan_issue_retention_period = 7.days
+
+  config.max_envelope_size = 1.megabyte
+  config.max_stack_frames = 50
+  config.max_breadcrumbs = 20
+
+  config.redact_fields = %w[
+    password
+    token
+    authorization
+    cookie
+    credit_card
+  ]
+
+  config.environments = {
+    local: {
+      transport: :local
+    }
+    # staging: {
+    #   transport: :http,
+    #   url: ENV["SENTRACE_STAGING_MCP_URL"],
+    #   token: ENV["SENTRACE_STAGING_MCP_TOKEN"]
+    # },
+    # production: {
+    #   transport: :http,
+    #   url: ENV["SENTRACE_PRODUCTION_MCP_URL"],
+    #   token: ENV["SENTRACE_PRODUCTION_MCP_TOKEN"]
+    # }
+  }
+end
