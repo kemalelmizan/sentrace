@@ -2,8 +2,8 @@
 
 ## 1. Local Query Backend, Cursor Pagination & Dispatcher
 
-- [ ] 1.1 Implement `Sentrace::Mcp::LocalBackend` (`lib/sentrace/mcp/local_backend.rb`) and MCP error classes (`lib/sentrace/errors.rb`) supporting `list_projects`, `list_issues`, `get_issue`, `update_issue_status`, `list_events`, `get_event`, and `get_error_trends` with keyset cursors, strict bounds (`limit <= 100`), allowlisted trend intervals (`minute`, `hour`, `day`), and environment attribution, and verify unit specs pass
-- [ ] 1.2 Implement `Sentrace::Mcp::Dispatcher` (`lib/sentrace/mcp/dispatcher.rb`) for environment discovery (`list_environments` without credential leakage) and `:local` environment dispatch/validation, and verify unit specs pass
+- [x] 1.1 Implement `Sentrace::Mcp::LocalBackend` (`lib/sentrace/mcp/local_backend.rb`) and MCP error classes (`lib/sentrace/errors.rb`) supporting `list_projects`, `list_issues`, `get_issue`, `update_issue_status`, `list_events`, `get_event`, and `get_error_trends` with keyset cursors, strict bounds (`limit <= 100`), allowlisted trend intervals (`minute`, `hour`, `day`), and environment attribution, and verify unit specs pass
+- [x] 1.2 Implement `Sentrace::Mcp::Dispatcher` (`lib/sentrace/mcp/dispatcher.rb`) for environment discovery (`list_environments` without credential leakage) and `:local` environment dispatch/validation, and verify unit specs pass
 
 ## 2. MCP Server Tools, Read-Only Resources & Investigation Prompt
 

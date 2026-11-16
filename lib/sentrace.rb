@@ -9,6 +9,8 @@ require "sentrace/ingestion/sanitizer"
 require "sentrace/issues/fingerprint"
 require "sentrace/issues/grouper"
 require "sentrace/ingestion/processor"
+require "sentrace/mcp/local_backend"
+require "sentrace/mcp/dispatcher"
 require "sentrace/engine"
 
 module Sentrace
