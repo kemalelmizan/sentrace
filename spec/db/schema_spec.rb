@@ -3,11 +3,12 @@ require "rails_helper"
 RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
   let(:connection) { ActiveRecord::Base.connection }
 
-  it "creates only the four engine-owned sentrace_ tables" do
+  it "creates only the five engine-owned sentrace_ tables" do
     sentrace_tables = connection.tables.select { |name| name.start_with?("sentrace_") }.sort
     expect(sentrace_tables).to eq(%w[
       sentrace_events
       sentrace_issues
+      sentrace_mcp_tokens
       sentrace_project_keys
       sentrace_projects
     ])
@@ -48,5 +49,15 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     expect(event_indexes["index_sentrace_events_on_issue_occurred_at"].orders).to eq("occurred_at" => :desc)
     expect(event_indexes["index_sentrace_events_on_project_occurred_at"].orders).to eq("occurred_at" => :desc)
     expect(event_indexes.values.map(&:using)).to all(eq(:btree))
+
+    mcp_token_cols = connection.columns(:sentrace_mcp_tokens).index_by(&:name)
+    expect(mcp_token_cols["token_digest"].sql_type).to eq("character varying(64)")
+    expect(mcp_token_cols["created_at"].sql_type).to eq("timestamp with time zone")
+    expect(mcp_token_cols["revoked_at"].sql_type).to eq("timestamp with time zone")
+    expect(mcp_token_cols["last_used_at"].sql_type).to eq("timestamp with time zone")
+
+    mcp_token_indexes = connection.indexes(:sentrace_mcp_tokens).index_by(&:name)
+    expect(mcp_token_indexes.keys).to contain_exactly("index_sentrace_mcp_tokens_on_token_digest")
+    expect(mcp_token_indexes["index_sentrace_mcp_tokens_on_token_digest"].unique).to be(true)
   end
 end

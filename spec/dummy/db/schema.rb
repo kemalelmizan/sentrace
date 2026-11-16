@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_16_000004) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_16_000005) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -47,6 +47,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_000004) do
     t.timestamptz "updated_at", null: false
     t.index ["project_id", "fingerprint"], name: "index_sentrace_issues_on_project_fingerprint", unique: true
     t.index ["project_id", "status", "last_seen_at"], name: "index_sentrace_issues_on_project_status_last_seen", order: { last_seen_at: :desc }
+  end
+
+  create_table "sentrace_mcp_tokens", force: :cascade do |t|
+    t.string "name", limit: 120, null: false
+    t.string "token_prefix", limit: 16, null: false
+    t.string "token_digest", limit: 64, null: false
+    t.boolean "active", default: true, null: false
+    t.timestamptz "last_used_at"
+    t.timestamptz "revoked_at"
+    t.timestamptz "created_at", null: false
+    t.index ["token_digest"], name: "index_sentrace_mcp_tokens_on_token_digest", unique: true
   end
 
   create_table "sentrace_project_keys", force: :cascade do |t|

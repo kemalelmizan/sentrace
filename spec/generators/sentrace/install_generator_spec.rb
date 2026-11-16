@@ -39,7 +39,7 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     expect(routes_content.scan("Sentrace::Engine").size).to eq(1)
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
-    expect(copied_migrations.size).to eq(4)
+    expect(copied_migrations.size).to eq(5)
 
     setup_task_path = File.join(@destination, "lib/tasks/sentrace_setup.rake")
     expect(File.exist?(setup_task_path)).to be(true)
@@ -57,6 +57,6 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     expect(routes_content.scan("Sentrace::Engine").size).to eq(1)
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
-    expect(copied_migrations.size).to eq(4)
+    expect(copied_migrations.size).to eq(5)
   end
 end

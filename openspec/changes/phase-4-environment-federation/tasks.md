@@ -2,7 +2,7 @@
 
 ## 1. Digest-Backed MCP Bearer Tokens & Rake Management
 
-- [ ] 1.1 Create `sentrace_mcp_tokens` migration (`db/migrate/20261116000005_create_sentrace_mcp_tokens.rb`), `Sentrace::McpToken` model (`app/models/sentrace/mcp_token.rb`), `Sentrace::Mcp::TokenManager` (`lib/sentrace/mcp/token_manager.rb`), and Rake tasks (`sentrace:mcp:tokens`, `sentrace:mcp:tokens:create[name]`, `sentrace:mcp:tokens:rotate[name]`, `sentrace:mcp:tokens:revoke[id]`), and verify model, schema, and Rake specs pass
+- [x] 1.1 Create `sentrace_mcp_tokens` migration (`db/migrate/20261116000005_create_sentrace_mcp_tokens.rb`), `Sentrace::McpToken` model (`app/models/sentrace/mcp_token.rb`), `Sentrace::Mcp::TokenManager` (`lib/sentrace/mcp/token_manager.rb`), and Rake tasks (`sentrace:mcp:tokens`, `sentrace:mcp:tokens:create[name]`, `sentrace:mcp:tokens:rotate[name]`, `sentrace:mcp:tokens:revoke[id]`), and verify model, schema, and Rake specs pass
 
 ## 2. Remote Streamable HTTP Endpoint (`/sentrace/mcp`)
 

@@ -1,0 +1,17 @@
+class CreateSentraceMcpTokens < ActiveRecord::Migration[7.1]
+  def change
+    create_table :sentrace_mcp_tokens do |t|
+      t.string :name, limit: 120, null: false
+      t.string :token_prefix, limit: 16, null: false
+      t.string :token_digest, limit: 64, null: false
+      t.boolean :active, null: false, default: true
+      t.timestamptz :last_used_at
+      t.timestamptz :revoked_at
+      t.timestamptz :created_at, null: false
+    end
+
+    add_index :sentrace_mcp_tokens, :token_digest,
+      unique: true,
+      name: "index_sentrace_mcp_tokens_on_token_digest"
+  end
+end
