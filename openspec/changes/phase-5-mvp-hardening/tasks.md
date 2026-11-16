@@ -6,7 +6,7 @@
 
 ## 2. PostgreSQL Storage Observability & Internal Admin API
 
-- [ ] 2.1 Implement `Sentrace::StorageStats` (`lib/sentrace/storage_stats.rb`) and `sentrace:stats` Rake task, mount `/sentrace/internal` routes (`projects`, `issues`, `events`, `stats`) under `app/controllers/sentrace/internal/`, and verify storage stats and internal API request specs pass
+- [x] 2.1 Implement `Sentrace::StorageStats` (`lib/sentrace/storage_stats.rb`) and `sentrace:stats` Rake task, mount `/sentrace/internal` routes (`projects`, `issues`, `events`, `stats`) under `app/controllers/sentrace/internal/`, and verify storage stats and internal API request specs pass
 
 ## 3. Repeatable Storage Benchmark, Security Verification & Release Readiness
 

@@ -1,4 +1,9 @@
 namespace :sentrace do
+  desc "Display PostgreSQL storage and retention statistics for Sentrace"
+  task stats: :environment do
+    Sentrace::StorageStats.print_report
+  end
+
   namespace :retention do
     desc "Delete expired Sentrace events and aged zero-event orphan issues in bounded batches"
     task cleanup: :environment do
