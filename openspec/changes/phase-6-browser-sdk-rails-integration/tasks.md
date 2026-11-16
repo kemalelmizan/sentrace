@@ -20,7 +20,7 @@
 
 ## 4. End-to-End Browser + Rails + MCP Integration Verification
 
-- [ ] 4.1 Add end-to-end integration spec generating real envelopes from `packages/sentrace` and `@sentry/browser`-compatible payloads, ingesting them alongside a backend Rails `X-Request-Id` error into `Sentrace::Engine`, and querying both via MCP `list_events(request_id: ...)` and `list_issues(platform: "javascript")`, verified with `bundle exec rspec spec/integration/browser_sdk_integration_spec.rb && bundle exec rubocop`
+- [x] 4.1 Add end-to-end integration spec generating real envelopes from `packages/sentrace` and `@sentry/browser`-compatible payloads, ingesting them alongside a backend Rails `X-Request-Id` error into `Sentrace::Engine`, and querying both via MCP `list_events(request_id: ...)` and `list_issues(platform: "javascript")`, verified with `bundle exec rspec spec/integration/browser_sdk_integration_spec.rb && bundle exec rubocop`
 
 ## Workflow follow-up
 
