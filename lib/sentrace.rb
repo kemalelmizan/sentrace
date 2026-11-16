@@ -19,6 +19,7 @@ require "sentrace/mcp/environment_router"
 require "sentrace/mcp/dispatcher"
 require "sentrace/mcp/server"
 require "sentrace/mcp/stdio_runner"
+require "sentrace/view_helpers"
 require "sentrace/engine"
 
 module Sentrace

@@ -36,7 +36,7 @@ module Sentrace
         }
       end
 
-      def list_issues(project_id: nil, status: nil, level: nil, release: nil, since: nil, until: nil, limit: nil, cursor: nil)
+      def list_issues(project_id: nil, status: nil, level: nil, release: nil, platform: nil, request_id: nil, since: nil, until: nil, limit: nil, cursor: nil)
         until_param = binding.local_variable_get(:until)
         effective_limit = coerce_limit(limit)
         resolved_project_id = resolve_optional_project_id(project_id)
@@ -58,6 +58,20 @@ module Sentrace
           scope = scope.where(
             "EXISTS (SELECT 1 FROM sentrace_events e WHERE e.issue_id = sentrace_issues.id AND e.release = ?)",
             release.to_s.strip
+          )
+        end
+
+        if platform && !platform.to_s.strip.empty?
+          scope = scope.where(
+            "EXISTS (SELECT 1 FROM sentrace_events e WHERE e.issue_id = sentrace_issues.id AND e.platform = ?)",
+            platform.to_s.strip.downcase
+          )
+        end
+
+        if request_id && !request_id.to_s.strip.empty?
+          scope = scope.where(
+            "EXISTS (SELECT 1 FROM sentrace_events e WHERE e.issue_id = sentrace_issues.id AND e.event_data -> 'tags' ->> 'request_id' = ?)",
+            request_id.to_s.strip
           )
         end
 
@@ -116,7 +130,7 @@ module Sentrace
         }
       end
 
-      def list_events(project_id: nil, issue_id: nil, since: nil, until: nil, limit: nil, cursor: nil)
+      def list_events(project_id: nil, issue_id: nil, platform: nil, request_id: nil, since: nil, until: nil, limit: nil, cursor: nil)
         until_param = binding.local_variable_get(:until)
         effective_limit = coerce_limit(limit)
         resolved_project_id = resolve_optional_project_id(project_id)
@@ -129,6 +143,10 @@ module Sentrace
         scope = Event.all
         scope = scope.where(project_id: resolved_project_id) if resolved_project_id
         scope = scope.where(issue_id: resolved_issue_id) if resolved_issue_id
+        scope = scope.where(platform: platform.to_s.strip.downcase) if platform && !platform.to_s.strip.empty?
+        if request_id && !request_id.to_s.strip.empty?
+          scope = scope.where("sentrace_events.event_data -> 'tags' ->> 'request_id' = ?", request_id.to_s.strip)
+        end
         scope = scope.where("sentrace_events.occurred_at >= ?", since_time) if since_time
         scope = scope.where("sentrace_events.occurred_at <= ?", until_time) if until_time
 
@@ -249,6 +267,7 @@ module Sentrace
             "event_environment" => event.environment,
             "release" => event.release,
             "platform" => event.platform,
+            "request_id" => event.event_data.dig("tags", "request_id"),
             "level" => event.level,
             "logger" => event.logger,
             "culprit" => event.culprit,

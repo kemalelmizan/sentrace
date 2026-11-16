@@ -75,7 +75,7 @@ module Sentrace
 
           server.define_tool(
             name: "list_issues",
-            description: "List grouped error issues filtered by project, status, severity, release, and time range with cursor pagination.",
+            description: "List grouped error issues filtered by project, status, severity, release, platform, request_id, and time range with cursor pagination.",
             input_schema: {
               properties: {
                 environment: { type: "string", description: "Environment label or 'all'." },
@@ -83,6 +83,8 @@ module Sentrace
                 status: { type: "string", enum: %w[unresolved resolved ignored] },
                 level: { type: "string", enum: %w[debug info warning error fatal] },
                 release: { type: "string", description: "Filter issues seen in a specific release." },
+                platform: { type: "string", description: "Filter issues seen on a specific platform (e.g. 'ruby' or 'javascript')." },
+                request_id: { type: "string", description: "Filter issues correlated with an HTTP X-Request-Id." },
                 since: { type: "string", description: "ISO-8601 lower bound on last_seen_at." },
                 until: { type: "string", description: "ISO-8601 upper bound on last_seen_at." },
                 limit: { type: "integer", minimum: 1, maximum: LocalBackend::MAX_LIMIT },
@@ -143,12 +145,14 @@ module Sentrace
 
           server.define_tool(
             name: "list_events",
-            description: "List individual error occurrences filtered by project, issue, and time window with cursor pagination.",
+            description: "List individual error occurrences filtered by project, issue, platform, request_id, and time window with cursor pagination.",
             input_schema: {
               properties: {
                 environment: { type: "string" },
                 project_id: { type: [ "integer", "string" ] },
                 issue_id: { type: "integer", minimum: 1 },
+                platform: { type: "string", description: "Filter events by SDK platform (e.g. 'ruby' or 'javascript')." },
+                request_id: { type: "string", description: "Filter events sharing a correlated X-Request-Id tag." },
                 since: { type: "string" },
                 until: { type: "string" },
                 limit: { type: "integer", minimum: 1, maximum: LocalBackend::MAX_LIMIT },

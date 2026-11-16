@@ -120,6 +120,45 @@ RSpec.describe Sentrace::Mcp::Server do
       expect(missing_issue.dig("result", "isError")).to be(true)
       expect(missing_issue.dig("result", "structuredContent", "category")).to eq("not_found")
     end
+
+    it "correlates Ruby backend and JavaScript frontend events and issues by request_id and platform" do
+      Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "11111111111111111111111111111111",
+          "timestamp" => "2026-11-16T10:31:00Z",
+          "platform" => "ruby",
+          "message" => "Backend checkout failure",
+          "request" => { "url" => "https://shop.example.com/checkout", "method" => "POST", "headers" => { "X-Request-Id" => "req-shared-77" } }
+        },
+        project: project
+      )
+      Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "22222222222222222222222222222222",
+          "timestamp" => "2026-11-16T10:31:01Z",
+          "platform" => "javascript",
+          "exception" => { "values" => [ { "type" => "TypeError", "value" => "Checkout fetch 500" } ] },
+          "tags" => { "request_id" => "req-shared-77" }
+        },
+        project: project
+      )
+
+      corr_events_resp = rpc("tools/call", {
+        name: "list_events",
+        arguments: { project_id: project.id, request_id: "req-shared-77" }
+      })
+      corr_events = corr_events_resp.dig("result", "structuredContent", "events")
+      expect(corr_events.map { |e| e["platform"] }).to match_array(%w[ruby javascript])
+      expect(corr_events.map { |e| e["request_id"] }.uniq).to eq([ "req-shared-77" ])
+
+      js_issues_resp = rpc("tools/call", {
+        name: "list_issues",
+        arguments: { project_id: project.id, platform: "javascript" }
+      })
+      js_issues = js_issues_resp.dig("result", "structuredContent", "issues")
+      expect(js_issues.size).to eq(1)
+      expect(js_issues.first["exception_type"]).to eq("TypeError")
+    end
   end
 
   describe "resources/read and prompts/get" do

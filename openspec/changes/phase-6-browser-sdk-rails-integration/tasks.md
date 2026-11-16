@@ -9,8 +9,8 @@
 
 ## 2. Rails View Helpers and Cross-Stack MCP Correlation
 
-- [ ] 2.1 Implement `Sentrace::ViewHelpers#sentrace_meta_tags` (lazy `ActiveSupport.on_load(:action_view)` registration and public-only DSN secret stripping), verified with `bundle exec rspec spec/lib/sentrace/view_helpers_spec.rb`
-- [ ] 2.2 Extend `Sentrace::Mcp::LocalBackend` and `Sentrace::Mcp::Server` with `platform` and `request_id` filtering on `list_issues` and `list_events` plus `request_id` summary attribution, verified with `bundle exec rspec spec/lib/sentrace/mcp/server_spec.rb`
+- [x] 2.1 Implement `Sentrace::ViewHelpers#sentrace_meta_tags` (lazy `ActiveSupport.on_load(:action_view)` registration and public-only DSN secret stripping), verified with `bundle exec rspec spec/lib/sentrace/view_helpers_spec.rb`
+- [x] 2.2 Extend `Sentrace::Mcp::LocalBackend` and `Sentrace::Mcp::Server` with `platform` and `request_id` filtering on `list_issues` and `list_events` plus `request_id` summary attribution, verified with `bundle exec rspec spec/lib/sentrace/mcp/server_spec.rb`
 
 ## 3. Zero-Dependency `@sentry/browser`-Compatible TypeScript SDK (`packages/sentrace`)
 
