@@ -34,6 +34,7 @@ RSpec.describe "Sentrace Remote Streamable HTTP MCP Endpoint (/sentrace/mcp)", t
         headers: mcp_headers
 
       expect(response).to have_http_status(:forbidden)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(JSON.parse(response.body)["error"]).to include("HTTPS is required")
     end
 
@@ -43,6 +44,7 @@ RSpec.describe "Sentrace Remote Streamable HTTP MCP Endpoint (/sentrace/mcp)", t
         headers: mcp_headers
 
       expect(response).to have_http_status(:ok)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       body = JSON.parse(response.body)
       expect(body.dig("result", "tools").map { |t| t["name"] }).to include("list_issues")
     end
@@ -54,6 +56,7 @@ RSpec.describe "Sentrace Remote Streamable HTTP MCP Endpoint (/sentrace/mcp)", t
         params: json_rpc("tools/list"),
         headers: base_headers
       expect(response).to have_http_status(:unauthorized)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(response.headers["WWW-Authenticate"]).to include("Bearer")
 
       post "https://staging.example.com/sentrace/mcp",

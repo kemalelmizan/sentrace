@@ -1,4 +1,4 @@
-class CreateSentraceIssues < ActiveRecord::Migration[7.1]
+class CreateSentraceIssues < ActiveRecord::Migration[6.1]
   def change
     create_table :sentrace_issues do |t|
       t.references :project, null: false, index: false, foreign_key: { to_table: :sentrace_projects, on_delete: :cascade }
@@ -7,11 +7,11 @@ class CreateSentraceIssues < ActiveRecord::Migration[7.1]
       t.integer :level, limit: 2, null: false
       t.string :exception_type, limit: 255
       t.string :message, limit: 1024
-      t.timestamptz :first_seen_at, null: false
-      t.timestamptz :last_seen_at, null: false
+      t.column :first_seen_at, :timestamptz, null: false
+      t.column :last_seen_at, :timestamptz, null: false
       t.bigint :event_count, null: false, default: 0
-      t.timestamptz :created_at, null: false
-      t.timestamptz :updated_at, null: false
+      t.column :created_at, :timestamptz, null: false
+      t.column :updated_at, :timestamptz, null: false
     end
 
     add_index :sentrace_issues, [ :project_id, :fingerprint ],

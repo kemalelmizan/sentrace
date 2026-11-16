@@ -17,9 +17,19 @@ jobs:
 
   spec:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gemfile: Gemfile
+            postgres_version: "16"
+          - gemfile: gemfiles/rails_6_1.gemfile
+            postgres_version: "12"
+          - gemfile: gemfiles/rails_6_1.gemfile
+            postgres_version: "16"
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres_version }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
@@ -38,6 +48,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
+          gemfile: ${{ matrix.gemfile }}
           bundler-cache: true
-      - run: bin/rails app:db:prepare
-      - run: bundle exec rspec
+      - name: Run RSpec suite
+        run: bundle exec rspec
+
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm --prefix packages/sentrace run build
+      - run: npm --prefix packages/sentrace test

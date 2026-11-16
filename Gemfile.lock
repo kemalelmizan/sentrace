@@ -3,8 +3,8 @@ PATH
   specs:
     sentrace (0.0.1)
       mcp (~> 1.0)
-      pg (~> 1.5)
-      rails (>= 7.1, < 9.0)
+      pg (>= 1.4, < 2.0)
+      rails (>= 6.1, < 9.0)
 
 GEM
   remote: https://rubygems.org/

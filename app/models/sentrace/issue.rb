@@ -17,8 +17,8 @@ module Sentrace
     belongs_to :project
     has_many :events, dependent: :destroy
 
-    enum :status, STATUSES, default: :unresolved, validate: true
-    enum :level, LEVELS, prefix: :level, validate: true
+    sentrace_enum :status, STATUSES, default: :unresolved
+    sentrace_enum :level, LEVELS, prefix: :level
 
     validates :fingerprint,
       presence: true,

@@ -41,6 +41,7 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
       }
 
       expect(response).to have_http_status(:ok)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(response.parsed_body).to eq("id" => event_id)
       expect(project.events.count).to eq(1)
       expect(project.issues.count).to eq(1)
@@ -59,6 +60,7 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
       }
 
       expect(response).to have_http_status(:ok)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(response.parsed_body).to eq("id" => event_id)
     end
 
@@ -108,7 +110,8 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
         "X-Sentry-Auth" => sentry_auth_header
       }
 
-      expect(response).to have_http_status(:content_too_large)
+      expect(response).to have_http_status(413)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(Sentrace::Event.count).to eq(0)
     end
 
@@ -124,6 +127,7 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
       }
 
       expect(response).to have_http_status(:ok)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(response.parsed_body).to eq("id" => event_id)
       expect(project.events.find_by!(event_id: event_id).event_data["message"]).to eq("Compressed error")
     end
@@ -141,7 +145,8 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
         "X-Sentry-Auth" => sentry_auth_header
       }
 
-      expect(response).to have_http_status(:content_too_large)
+      expect(response).to have_http_status(413)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(Sentrace::Event.count).to eq(0)
     end
   end
@@ -242,6 +247,7 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
       }
 
       expect(response).to have_http_status(:no_content)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(response.headers["Access-Control-Allow-Origin"]).to eq("https://spa.example.com")
       expect(response.headers["Vary"]).to include("Origin")
       expect(response.headers["Access-Control-Allow-Methods"]).to eq("POST, OPTIONS")

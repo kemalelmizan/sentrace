@@ -13,7 +13,7 @@ module Sentrace
     belongs_to :project
     belongs_to :issue
 
-    enum :level, Issue::LEVELS, prefix: :level, validate: true
+    sentrace_enum :level, Issue::LEVELS, prefix: :level
 
     before_validation :normalize_event_id
 

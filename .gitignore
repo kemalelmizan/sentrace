@@ -19,3 +19,4 @@ spec/examples.txt
 *.gem
 node_modules/
 *.tgz
+/gemfiles/*.lock

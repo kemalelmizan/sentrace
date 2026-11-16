@@ -60,4 +60,45 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     expect(mcp_token_indexes.keys).to contain_exactly("index_sentrace_mcp_tokens_on_token_digest")
     expect(mcp_token_indexes["index_sentrace_mcp_tokens_on_token_digest"].unique).to be(true)
   end
+
+  it "uses ActiveRecord::Migration[6.1] and t.column(..., :timestamptz) without PG 15+ SQL constructs" do
+    migrations = Dir.glob(File.expand_path("../../db/migrate/*.rb", __dir__)).sort
+    expect(migrations.size).to eq(5)
+
+    migrations.each do |migration_file|
+      source = File.read(migration_file)
+      expect(source).to include("ActiveRecord::Migration[6.1]")
+      expect(source).not_to include("t.timestamptz")
+      expect(source).to include(":timestamptz")
+    end
+
+    ruby_sources = Dir.glob(File.expand_path("../../{app,lib}/**/*.rb", __dir__))
+    ruby_sources.each do |file|
+      content = File.read(file)
+      expect(content).not_to match(/\bMERGE\s+INTO\b/i)
+      expect(content).not_to match(/\bNULLS\s+NOT\s+DISTINCT\b/i)
+    end
+  end
+
+  it "rolls all five engine migrations down and back up cleanly inside a transaction" do
+    migrations_dir = File.expand_path("../../db/migrate", __dir__)
+    migrations = Dir.glob(File.join(migrations_dir, "*.rb")).sort
+    migrations.each { |file| require file }
+
+    classes = [
+      CreateSentraceProjects,
+      CreateSentraceProjectKeys,
+      CreateSentraceIssues,
+      CreateSentraceEvents,
+      CreateSentraceMcpTokens
+    ]
+
+    ActiveRecord::Migration.suppress_messages do
+      classes.reverse_each { |klass| klass.migrate(:down) }
+      classes.each { |klass| klass.migrate(:up) }
+    end
+
+    expect(connection.columns(:sentrace_events).index_by(&:name)["occurred_at"].sql_type)
+      .to eq("timestamp with time zone")
+  end
 end

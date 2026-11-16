@@ -14,7 +14,7 @@ module Sentrace
       def create
         slug = params[:slug].to_s.strip
         if slug.empty?
-          return render json: { error: "slug is required" }, status: :unprocessable_content
+          return render json: { error: "slug is required" }, status: 422
         end
 
         project, key = Project.provision!(slug: slug, name: params[:name])

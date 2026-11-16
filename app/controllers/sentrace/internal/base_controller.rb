@@ -8,7 +8,7 @@ module Sentrace
       end
 
       rescue_from ActiveRecord::RecordInvalid do |err|
-        render json: { error: err.record.errors.full_messages.join(", ") }, status: :unprocessable_content
+        render json: { error: err.record.errors.full_messages.join(", ") }, status: 422
       end
 
       rescue_from McpNotFoundError do |err|
@@ -16,7 +16,7 @@ module Sentrace
       end
 
       rescue_from McpInvalidParamsError do |err|
-        render json: { error: err.message }, status: :unprocessable_content
+        render json: { error: err.message }, status: 422
       end
 
       private

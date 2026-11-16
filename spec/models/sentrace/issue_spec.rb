@@ -33,5 +33,13 @@ RSpec.describe Sentrace::Issue, type: :model do
 
     bad = build(:sentrace_issue, status: :archived)
     expect(bad).not_to be_valid
+    expect(bad.errors[:status]).to be_present
+
+    bad_level = build(:sentrace_issue, level: :trace)
+    expect(bad_level).not_to be_valid
+    expect(bad_level.errors[:level]).to be_present
+
+    nil_status = build(:sentrace_issue, status: nil)
+    expect(nil_status).not_to be_valid
   end
 end

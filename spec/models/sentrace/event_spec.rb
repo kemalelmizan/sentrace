@@ -30,4 +30,10 @@ RSpec.describe Sentrace::Event, type: :model do
       duplicate.save!(validate: false)
     }.to raise_error(ActiveRecord::RecordNotUnique)
   end
+
+  it "validates level enum values without raising ArgumentError on invalid assignments" do
+    invalid_event = build(:sentrace_event, level: :unknown_severity)
+    expect(invalid_event).not_to be_valid
+    expect(invalid_event.errors[:level]).to be_present
+  end
 end

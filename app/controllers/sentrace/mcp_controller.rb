@@ -57,9 +57,11 @@ module Sentrace
       def write_rack_response(rack_status, rack_headers, rack_body)
         rack_headers.each do |key, value|
           next if key.to_s.casecmp("content-length").zero?
+          next if key.to_s.casecmp("cache-control").zero?
 
           response.set_header(key, value)
         end
+        response.set_header("Cache-Control", "no-store")
 
         chunks = []
         rack_body.each { |chunk| chunks << chunk.to_s }

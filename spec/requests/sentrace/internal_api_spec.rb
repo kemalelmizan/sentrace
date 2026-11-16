@@ -13,6 +13,7 @@ RSpec.describe "Sentrace Internal Administrative API (/sentrace/internal)", type
 
       get "/sentrace/internal/projects"
       expect(response).to have_http_status(:unauthorized)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
 
       get "/sentrace/internal/projects", headers: { "Authorization" => "Bearer #{dsn_key.public_key}" }
       expect(response).to have_http_status(:unauthorized)
@@ -25,6 +26,7 @@ RSpec.describe "Sentrace Internal Administrative API (/sentrace/internal)", type
 
       get "/sentrace/internal/projects"
       expect(response).to have_http_status(:unauthorized)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
 
       get "/sentrace/internal/projects", headers: { "X-Host-Admin" => "allow-ops" }
       expect(response).to have_http_status(:ok)
@@ -91,7 +93,29 @@ RSpec.describe "Sentrace Internal Administrative API (/sentrace/internal)", type
 
       delete "/sentrace/internal/projects/#{project_id}", headers: auth_headers
       expect(response).to have_http_status(:no_content)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
       expect(Sentrace::Project.where(id: project_id)).to be_empty
+    end
+
+    it "returns HTTP 422 with Cache-Control: no-store on blank slug, duplicate slug, or invalid filter params" do
+      post "/sentrace/internal/projects",
+        params: { slug: "   " },
+        headers: auth_headers
+      expect(response).to have_http_status(422)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
+
+      Sentrace::Project.provision!(slug: "dup-proj")
+      post "/sentrace/internal/projects",
+        params: { slug: "dup-proj" },
+        headers: auth_headers
+      expect(response).to have_http_status(422)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
+
+      get "/sentrace/internal/issues",
+        params: { status: "invalid-status" },
+        headers: auth_headers
+      expect(response).to have_http_status(422)
+      expect(response.headers["Cache-Control"]).to eq("no-store")
     end
   end
 end

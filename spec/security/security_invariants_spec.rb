@@ -20,7 +20,7 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
         "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
       }
 
-    expect(response).to have_http_status(:content_too_large)
+    expect(response).to have_http_status(413)
   end
 
   it "validates ingestion credentials before full envelope processing" do

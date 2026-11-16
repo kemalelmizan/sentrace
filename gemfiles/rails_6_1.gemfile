@@ -1,0 +1,13 @@
+source "https://rubygems.org"
+
+gemspec path: ".."
+
+gem "rails", "~> 6.1.7"
+gem "rack", "~> 2.2.9"
+gem "pg", ">= 1.4", "< 2.0"
+
+group :development, :test do
+  gem "factory_bot_rails", "~> 6.4"
+  gem "rspec-rails", "~> 6.1"
+  gem "sentry-ruby", "~> 5.0", require: false
+end

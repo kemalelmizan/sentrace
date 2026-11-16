@@ -10,17 +10,30 @@ FactoryBot.definition_file_paths = [ File.expand_path("factories", __dir__) ]
 FactoryBot.find_definitions
 
 engine_migrations_path = File.expand_path("../db/migrate", __dir__)
-unless ActiveRecord::Migrator.migrations_paths.any? { |path| File.expand_path(path) == engine_migrations_path }
-  ActiveRecord::Migrator.migrations_paths << engine_migrations_path
+migration_paths =
+  if ActiveRecord::Migrator.respond_to?(:migrations_paths)
+    ActiveRecord::Migrator.migrations_paths
+  else
+    ActiveRecord::Tasks::DatabaseTasks.migrations_paths
+  end
+
+unless migration_paths.any? { |path| File.expand_path(path) == engine_migrations_path }
+  migration_paths << engine_migrations_path
 end
 
-has_migrations = ActiveRecord::Migrator.migrations_paths.any? do |path|
+has_migrations = migration_paths.any? do |path|
   Dir.glob(File.join(path, "*.rb")).any?
 end
 
 if has_migrations
   begin
-    ActiveRecord::Migration.maintain_test_schema!
+    if ActiveRecord.gem_version >= Gem::Version.new("7.1")
+      ActiveRecord::Migration.maintain_test_schema!
+    elsif ActiveRecord::MigrationContext.instance_method(:initialize).arity == 1
+      ActiveRecord::MigrationContext.new(migration_paths).migrate
+    else
+      ActiveRecord::MigrationContext.new(migration_paths, ActiveRecord::SchemaMigration).migrate
+    end
   rescue ActiveRecord::PendingMigrationError => e
     abort e.to_s.strip
   end

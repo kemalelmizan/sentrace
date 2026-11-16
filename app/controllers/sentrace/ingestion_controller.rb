@@ -20,7 +20,7 @@ module Sentrace
 
       max_size = config.max_envelope_size
       if request.content_length && request.content_length > max_size
-        return render json: { error: "Payload too large" }, status: :content_too_large
+        return render json: { error: "Payload too large" }, status: 413
       end
 
       raw_bytes = read_bounded_stream(request.body, max_size)
@@ -39,7 +39,7 @@ module Sentrace
 
       render json: { id: result.primary_event_id }, status: :ok
     rescue PayloadTooLargeError
-      render json: { error: "Payload too large" }, status: :content_too_large
+      render json: { error: "Payload too large" }, status: 413
     rescue EnvelopeParseError
       render json: { error: "Malformed envelope" }, status: :bad_request
     rescue StandardError => e
