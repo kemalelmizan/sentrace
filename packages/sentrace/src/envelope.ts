@@ -1,19 +1,19 @@
-import { SDK_NAME, VERSION, formatPublicDsn } from "./dsn.ts";
+import { SDK_NAME, VERSION, formatPublicDsn, getGlobalObject } from "./dsn.ts";
 import type { ParsedDsn, SentryEvent } from "./types.ts";
 
 export function generateEventId(): string {
-  const g = globalThis as {
+  const g = getGlobalObject() as {
     crypto?: {
       randomUUID?: () => string;
       getRandomValues?: (buf: Uint8Array) => Uint8Array;
     };
   };
 
-  if (g.crypto?.randomUUID) {
+  if (g.crypto && typeof g.crypto.randomUUID === "function") {
     return g.crypto.randomUUID().replace(/-/g, "").toLowerCase();
   }
 
-  if (g.crypto?.getRandomValues) {
+  if (g.crypto && typeof g.crypto.getRandomValues === "function") {
     const bytes = g.crypto.getRandomValues(new Uint8Array(16));
     let hex = "";
     for (let i = 0; i < bytes.length; i += 1) {

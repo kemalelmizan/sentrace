@@ -1,0 +1,8 @@
+{
+  "name": "sentrace/react",
+  "type": "commonjs",
+  "main": "./index.js",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "sideEffects": false
+}

@@ -1,7 +1,7 @@
 {
   "name": "sentrace",
   "version": "0.1.0",
-  "description": "Zero-dependency @sentry/browser-compatible frontend error capturing SDK for Sentrace — cohesively integrated with Ruby on Rails, Hotwire, and federated MCP.",
+  "description": "Zero-dependency @sentry/browser-compatible frontend error capturing SDK for Sentrace — cohesively integrated with Ruby on Rails, Hotwire, React, and federated MCP.",
   "license": "MIT",
   "author": "Kemal Elmizan <kemalelmizan@gmail.com>",
   "homepage": "https://github.com/kemalelmizan/sentrace#readme",
@@ -20,6 +20,8 @@
     "hotwire",
     "turbo",
     "stimulus",
+    "react",
+    "error-boundary",
     "sentry",
     "sentry-browser",
     "mcp",
@@ -38,13 +40,28 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
-    "./browser": "./dist/sentrace.browser.js"
+    "./browser": "./dist/sentrace.browser.js",
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.mjs",
+      "require": "./dist/react.cjs"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "react",
     "LICENSE.txt",
     "README.md"
   ],
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "sideEffects": false,
   "engines": {
     "node": ">=18"

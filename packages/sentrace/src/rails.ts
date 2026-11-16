@@ -1,4 +1,4 @@
-import { scrubUrl } from "./dsn.ts";
+import { getGlobalObject, scrubUrl } from "./dsn.ts";
 import type {
   Breadcrumb,
   CaptureContext,
@@ -23,7 +23,8 @@ function readMetaTagContent(doc: MetaQueryDocument | undefined, metaName: string
   if (typeof doc.querySelector === "function") {
     const el = doc.querySelector(`meta[name="${metaName}"]`);
     if (el) {
-      const val = (typeof el.getAttribute === "function" ? el.getAttribute("content") : null) ?? el.content;
+      const attrVal = typeof el.getAttribute === "function" ? el.getAttribute("content") : null;
+      const val = attrVal !== null && attrVal !== undefined ? attrVal : el.content;
       if (typeof val === "string" && val.trim()) {
         return val.trim();
       }
@@ -34,9 +35,11 @@ function readMetaTagContent(doc: MetaQueryDocument | undefined, metaName: string
     const metas = doc.getElementsByTagName("meta");
     for (let i = 0; i < metas.length; i += 1) {
       const item = metas[i]!;
-      const itemName = (typeof item.getAttribute === "function" ? item.getAttribute("name") : null) ?? item.name;
+      const attrName = typeof item.getAttribute === "function" ? item.getAttribute("name") : null;
+      const itemName = attrName !== null && attrName !== undefined ? attrName : item.name;
       if (itemName === metaName) {
-        const val = (typeof item.getAttribute === "function" ? item.getAttribute("content") : null) ?? item.content;
+        const attrVal = typeof item.getAttribute === "function" ? item.getAttribute("content") : null;
+        const val = attrVal !== null && attrVal !== undefined ? attrVal : item.content;
         if (typeof val === "string" && val.trim()) {
           return val.trim();
         }
@@ -47,11 +50,24 @@ function readMetaTagContent(doc: MetaQueryDocument | undefined, metaName: string
   return undefined;
 }
 
+function readHeaderSafely(headers: { get?: (k: string) => string | null } | undefined, name: string): string | undefined {
+  if (!headers || typeof headers.get !== "function") {
+    return undefined;
+  }
+  try {
+    const raw = headers.get(name);
+    return raw !== null && raw !== undefined ? raw : undefined;
+  } catch (_err) {
+    return undefined;
+  }
+}
+
 /**
  * Reads Rails `<meta name="sentrace-*">` tags emitted by `sentrace_meta_tags`.
  */
 export function readRailsMeta(customDoc?: unknown): RailsMetaConfig {
-  const doc = (customDoc ?? (globalThis as { document?: unknown }).document) as MetaQueryDocument | undefined;
+  const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
+  const doc = rawDoc as MetaQueryDocument | undefined;
   if (!doc) {
     return {};
   }
@@ -66,6 +82,7 @@ export function readRailsMeta(customDoc?: unknown): RailsMetaConfig {
 
 export interface RailsIntegrationHooks {
   redactFields: string[];
+  allowFields?: string[];
   onBreadcrumb: (breadcrumb: Breadcrumb) => void;
   onRequestIdChange: (requestId: string) => void;
   captureException: (error: unknown, context?: CaptureContext) => string;
@@ -79,20 +96,22 @@ export function installRailsTurboInstrumentation(
   hooks: RailsIntegrationHooks,
   customDoc?: unknown
 ): () => void {
-  const doc = (customDoc ?? (globalThis as { document?: unknown }).document) as MetaQueryDocument | undefined;
+  const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
+  const doc = rawDoc as MetaQueryDocument | undefined;
   if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
     return () => {};
   }
 
   const onTurboVisit = (rawEvent: unknown): void => {
-    const detail = (rawEvent as { detail?: { url?: string; action?: string } })?.detail;
+    const ev = rawEvent as { detail?: { url?: string; action?: string } } | undefined;
+    const detail = ev ? ev.detail : undefined;
     hooks.onBreadcrumb({
       type: "navigation",
       category: "turbo.visit",
       level: "info",
       data: {
-        url: scrubUrl(detail?.url, hooks.redactFields),
-        ...(detail?.action ? { action: detail.action } : {})
+        url: scrubUrl(detail ? detail.url : undefined, hooks.redactFields, hooks.allowFields),
+        ...(detail && detail.action ? { action: detail.action } : {})
       }
     });
   };
@@ -105,26 +124,31 @@ export function installRailsTurboInstrumentation(
   };
 
   const onTurboFetchRequestError = (rawEvent: unknown): void => {
-    const ev = rawEvent as {
-      detail?: {
-        url?: string | URL;
-        error?: unknown;
-        request?: { url?: string };
-        response?: { statusCode?: number; responseHTML?: unknown; headers?: { get?: (k: string) => string | null } };
-      };
-    };
-    const rawUrl = ev?.detail?.url ? String(ev.detail.url) : ev?.detail?.request?.url;
-    const safeUrl = scrubUrl(rawUrl, hooks.redactFields);
-    const requestId = ev?.detail?.response?.headers?.get?.("x-request-id") ?? undefined;
+    const ev = rawEvent as
+      | {
+          detail?: {
+            url?: string | URL;
+            error?: unknown;
+            request?: { url?: string };
+            response?: { statusCode?: number; responseHTML?: unknown; headers?: { get?: (k: string) => string | null } };
+          };
+        }
+      | undefined;
+    const detail = ev ? ev.detail : undefined;
+    const rawUrl =
+      detail && detail.url ? String(detail.url) : detail && detail.request ? detail.request.url : undefined;
+    const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
+    const requestId = readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id");
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }
 
+    const detailErr = detail ? detail.error : undefined;
     const underlying =
-      ev?.detail?.error instanceof Error
-        ? ev.detail.error
+      detailErr instanceof Error
+        ? detailErr
         : new Error(`Turbo fetch request failed${safeUrl ? ` for ${safeUrl}` : ""}`);
-    if (!(ev?.detail?.error instanceof Error)) {
+    if (!(detailErr instanceof Error)) {
       underlying.name = "TurboFetchRequestError";
     }
 
@@ -143,21 +167,24 @@ export function installRailsTurboInstrumentation(
   };
 
   const onTurboFrameMissing = (rawEvent: unknown): void => {
-    const ev = rawEvent as {
-      target?: { id?: string };
-      detail?: {
-        response?: {
-          url?: string;
-          status?: number;
-          headers?: { get?: (k: string) => string | null };
-        };
-      };
-    };
+    const ev = rawEvent as
+      | {
+          target?: { id?: string };
+          detail?: {
+            response?: {
+              url?: string;
+              status?: number;
+              headers?: { get?: (k: string) => string | null };
+            };
+          };
+        }
+      | undefined;
 
-    const frameId = ev?.target?.id || "unknown";
-    const status = ev?.detail?.response?.status;
-    const safeUrl = scrubUrl(ev?.detail?.response?.url, hooks.redactFields);
-    const requestId = ev?.detail?.response?.headers?.get?.("x-request-id") ?? undefined;
+    const frameId = (ev && ev.target && ev.target.id) || "unknown";
+    const response = ev && ev.detail ? ev.detail.response : undefined;
+    const status = response ? response.status : undefined;
+    const safeUrl = scrubUrl(response ? response.url : undefined, hooks.redactFields, hooks.allowFields);
+    const requestId = readHeaderSafely(response ? response.headers : undefined, "x-request-id");
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }
@@ -190,10 +217,12 @@ export function installRailsTurboInstrumentation(
   doc.addEventListener("turbo:frame-missing", onTurboFrameMissing);
 
   return () => {
-    doc.removeEventListener?.("turbo:visit", onTurboVisit);
-    doc.removeEventListener?.("turbo:load", onTurboLoad);
-    doc.removeEventListener?.("turbo:fetch-request-error", onTurboFetchRequestError);
-    doc.removeEventListener?.("turbo:frame-missing", onTurboFrameMissing);
+    if (typeof doc.removeEventListener === "function") {
+      doc.removeEventListener("turbo:visit", onTurboVisit);
+      doc.removeEventListener("turbo:load", onTurboLoad);
+      doc.removeEventListener("turbo:fetch-request-error", onTurboFetchRequestError);
+      doc.removeEventListener("turbo:frame-missing", onTurboFrameMissing);
+    }
   };
 }
 
@@ -213,11 +242,10 @@ export function bindStimulusErrorHandler(
     typeof application.handleError === "function" ? application.handleError.bind(application) : null;
 
   const wrappedHandler = (error: Error, message: string, detail: Record<string, unknown> = {}): void => {
+    const ctrl = detail.controller as { identifier?: unknown } | undefined;
     const identifier =
       (typeof detail.identifier === "string" && detail.identifier) ||
-      (typeof (detail.controller as { identifier?: string } | undefined)?.identifier === "string"
-        ? (detail.controller as { identifier: string }).identifier
-        : undefined);
+      (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
     const action = typeof detail.action === "string" ? detail.action : undefined;
 
     captureFn(error, {

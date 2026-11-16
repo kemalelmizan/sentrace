@@ -1,5 +1,13 @@
 import { installBrowserInstrumentation } from "./browser.ts";
-import { SDK_NAME, VERSION, buildEnvelopeEndpoint, parseDsn, scrubUrl } from "./dsn.ts";
+import {
+  SDK_NAME,
+  VERSION,
+  buildEnvelopeEndpoint,
+  getGlobalObject,
+  nullishCoalesce,
+  parseDsn,
+  scrubUrl
+} from "./dsn.ts";
 import { generateEventId, serializeEnvelope } from "./envelope.ts";
 import { bindStimulusErrorHandler, installRailsTurboInstrumentation, readRailsMeta } from "./rails.ts";
 import { Scope } from "./scope.ts";
@@ -37,34 +45,43 @@ function matchesPattern(value: string, pattern: string | RegExp): boolean {
 }
 
 export class BrowserClient {
-  readonly config: FrozenClientConfig;
-  private readonly options: SentraceOptions;
-  private readonly parsedDsn: ParsedDsn | null;
-  private readonly endpointUrl: string | null;
-  private readonly transport: Transport | null;
-  private readonly redactFields: string[];
-  private closed = false;
-  private readonly teardowns: Array<() => void> = [];
+  declare readonly config: FrozenClientConfig;
+  declare private readonly options: SentraceOptions;
+  declare private readonly parsedDsn: ParsedDsn | null;
+  declare private readonly endpointUrl: string | null;
+  declare private readonly transport: Transport | null;
+  declare private readonly redactFields: string[];
+  declare private readonly allowFields: string[];
+  declare private closed: boolean;
+  declare private readonly teardowns: Array<() => void>;
 
   constructor(options: SentraceOptions, scope: Scope) {
+    this.closed = false;
+    this.teardowns = [];
+
     const useRails = options.railsIntegration !== false;
     const railsMeta = useRails ? readRailsMeta() : {};
 
-    const resolvedDsn = options.dsn !== undefined ? options.dsn : (railsMeta.dsn ?? null);
-    const resolvedEnv = options.environment ?? railsMeta.environment ?? "production";
+    const resolvedDsn =
+      options.dsn !== undefined ? options.dsn : nullishCoalesce(railsMeta.dsn, null);
+    const resolvedEnv = nullishCoalesce(
+      options.environment,
+      nullishCoalesce(railsMeta.environment, "production")
+    );
     const resolvedRelease =
-      options.release !== undefined ? options.release : (railsMeta.release ?? null);
+      options.release !== undefined ? options.release : nullishCoalesce(railsMeta.release, null);
 
     this.options = options;
     this.redactFields = options.redactFields ? [...options.redactFields] : [];
+    this.allowFields = options.allowFields ? [...options.allowFields] : [];
     this.config = Object.freeze({
-      enabled: options.enabled ?? true,
-      dsn: resolvedDsn ?? null,
+      enabled: nullishCoalesce(options.enabled, true),
+      dsn: nullishCoalesce(resolvedDsn, null),
       environment: resolvedEnv,
-      release: resolvedRelease ?? null,
-      sampleRate: options.sampleRate ?? 1.0,
-      maxBreadcrumbs: options.maxBreadcrumbs ?? 20,
-      maxStackFrames: options.maxStackFrames ?? 50
+      release: nullishCoalesce(resolvedRelease, null),
+      sampleRate: nullishCoalesce(options.sampleRate, 1.0),
+      maxBreadcrumbs: nullishCoalesce(options.maxBreadcrumbs, 20),
+      maxStackFrames: nullishCoalesce(options.maxStackFrames, 50)
     });
 
     if (railsMeta.requestId) {
@@ -85,6 +102,7 @@ export class BrowserClient {
         installBrowserInstrumentation({
           endpointUrl: this.endpointUrl,
           redactFields: this.redactFields,
+          allowFields: this.allowFields,
           onError: (err, meta) => {
             this.captureExceptionWithMeta(err, scope, undefined, meta);
           },
@@ -102,6 +120,7 @@ export class BrowserClient {
       this.teardowns.push(
         installRailsTurboInstrumentation({
           redactFields: this.redactFields,
+          allowFields: this.allowFields,
           onBreadcrumb: (crumb) => {
             this.recordBreadcrumb(crumb, scope);
           },
@@ -221,20 +240,19 @@ export class BrowserClient {
         ? partialEvent.event_id.replace(/-/g, "").toLowerCase()
         : generateEventId();
 
+    const effectiveRelease = nullishCoalesce(partialEvent.release, this.config.release);
     const baseEvent: SentryEvent = {
       ...partialEvent,
       event_id: eventId,
-      timestamp: partialEvent.timestamp ?? new Date().toISOString(),
+      timestamp: nullishCoalesce(partialEvent.timestamp, new Date().toISOString()),
       platform: "javascript",
-      environment: partialEvent.environment ?? this.config.environment,
-      ...(partialEvent.release ?? this.config.release
-        ? { release: (partialEvent.release ?? this.config.release) || undefined }
-        : {}),
-      sdk: partialEvent.sdk ?? { name: SDK_NAME, version: VERSION }
+      environment: nullishCoalesce(partialEvent.environment, this.config.environment),
+      ...(effectiveRelease ? { release: effectiveRelease } : {}),
+      sdk: nullishCoalesce(partialEvent.sdk, { name: SDK_NAME, version: VERSION })
     };
 
     return this.prepareAndSend(baseEvent, scope, {
-      ...hint,
+      ...(hint ? hint : {}),
       event_id: eventId
     });
   }
@@ -269,16 +287,21 @@ export class BrowserClient {
     }
 
     if (!event.request) {
-      const currentHref = (globalThis as { window?: { location?: { href?: string } }; location?: { href?: string } })
-        .window?.location?.href ?? (globalThis as { location?: { href?: string } }).location?.href;
-      const safeHref = scrubUrl(currentHref, this.redactFields);
+      const g = getGlobalObject() as {
+        window?: { location?: { href?: string } };
+        location?: { href?: string };
+      };
+      const winHref = g.window && g.window.location ? g.window.location.href : undefined;
+      const globalHref = g.location ? g.location.href : undefined;
+      const currentHref = winHref !== undefined && winHref !== null ? winHref : globalHref;
+      const safeHref = scrubUrl(currentHref, this.redactFields, this.allowFields);
       if (safeHref) {
         event.request = { url: safeHref };
       }
     } else if (event.request.url) {
       event.request = {
         ...event.request,
-        url: scrubUrl(event.request.url, this.redactFields)
+        url: scrubUrl(event.request.url, this.redactFields, this.allowFields)
       };
     }
 
@@ -303,12 +326,14 @@ export class BrowserClient {
 
   private shouldFilterEvent(event: SentryEvent): boolean {
     const ignoreErrors = this.options.ignoreErrors;
+    const excValues = event.exception && event.exception.values ? event.exception.values : [];
+
     if (ignoreErrors && ignoreErrors.length > 0) {
       const candidates: string[] = [];
       if (event.message) {
         candidates.push(event.message);
       }
-      for (const exc of event.exception?.values ?? []) {
+      for (const exc of excValues) {
         if (exc.value) {
           candidates.push(exc.value);
           candidates.push(`${exc.type}: ${exc.value}`);
@@ -319,7 +344,14 @@ export class BrowserClient {
       }
     }
 
-    const frames = event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
+    const frames: StackFrame[] = [];
+    for (const v of excValues) {
+      if (v.stacktrace && v.stacktrace.frames) {
+        for (const frame of v.stacktrace.frames) {
+          frames.push(frame);
+        }
+      }
+    }
     const filenames = frames.map((f) => f.filename || f.abs_path || "").filter(Boolean);
 
     if (this.options.denyUrls && this.options.denyUrls.length > 0 && filenames.length > 0) {
@@ -368,7 +400,7 @@ export function getConfig(): FrozenClientConfig | null {
 }
 
 export function getClient(): BrowserClient | undefined {
-  return activeClient ?? undefined;
+  return activeClient ? activeClient : undefined;
 }
 
 export function isInitialized(): boolean {
@@ -417,7 +449,7 @@ export function captureMessage(
 
 export function captureEvent(event: Partial<SentryEvent>, hint?: SentryEventHint): string {
   if (!activeClient) {
-    return event.event_id ?? generateEventId();
+    return nullishCoalesce(event.event_id, generateEventId());
   }
   return activeClient.captureEvent(event, activeScope(), hint);
 }

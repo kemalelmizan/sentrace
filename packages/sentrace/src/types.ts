@@ -188,6 +188,10 @@ export interface SentraceOptions {
    */
   redactFields?: string[];
   /**
+   * Query-string field names case-insensitively exempted from default/custom URL redaction.
+   */
+  allowFields?: string[];
+  /**
    * Automatically attach browser global error, unhandledrejection, click, navigation, and fetch/XHR hooks (`true` by default).
    */
   autoInstrumentBrowser?: boolean;

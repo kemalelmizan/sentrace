@@ -189,6 +189,10 @@ export interface SentraceOptions {
    */
   redactFields?: string[];
   /**
+   * Query-string field names case-insensitively exempted from default/custom URL redaction.
+   */
+  allowFields?: string[];
+  /**
    * Automatically attach browser global error, unhandledrejection, click, navigation, and fetch/XHR hooks (`true` by default).
    */
   autoInstrumentBrowser?: boolean;
@@ -249,6 +253,12 @@ export declare class BrowserClient {
   constructor(options: SentraceOptions, scope: Scope);
   recordBreadcrumb(breadcrumb: Breadcrumb, scope: Scope): void;
   captureException(error: unknown, scope: Scope, captureContext?: CaptureContext): string;
+  captureExceptionWithMeta(
+    error: unknown,
+    scope: Scope,
+    captureContext: CaptureContext | undefined,
+    meta: { handled: boolean; mechanismType: string; fallbackFrame?: StackFrame }
+  ): string;
   captureMessage(
     message: string,
     scope: Scope,
@@ -293,7 +303,11 @@ export declare function registerStimulusErrorHandler(application: StimulusApplic
 export declare function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null;
 export declare function formatPublicDsn(dsn: ParsedDsn): string;
 export declare function buildEnvelopeEndpoint(dsn: ParsedDsn): string;
-export declare function scrubUrl(rawUrl: string | undefined, extraRedactFields?: string[]): string | undefined;
+export declare function scrubUrl(
+  rawUrl: string | undefined,
+  extraRedactFields?: string[],
+  allowFields?: string[]
+): string | undefined;
 export declare function generateEventId(): string;
 export declare function serializeEnvelope(event: SentryEvent, dsn: ParsedDsn): string;
 export declare function createBrowserTransport(endpointUrl: string): Transport;

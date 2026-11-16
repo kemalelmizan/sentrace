@@ -66,6 +66,33 @@ test("ESM dist/index.mjs exports 0.1.0 and delivers Sentry v7 envelopes end-to-e
 
   await close();
   assert.equal(getConfig(), null);
+
+  const allowDelivered = [];
+  init({
+    dsn: "https://pub123@errors.example.com/sentrace/1",
+    allowFields: ["token_present"],
+    autoInstrumentBrowser: false,
+    railsIntegration: false,
+    transport: () => ({
+      send: async (envelope) => {
+        allowDelivered.push(envelope);
+        return { statusCode: 200 };
+      },
+      flush: async () => true
+    })
+  });
+  SentraceDefault.captureEvent({
+    message: "Calibration check",
+    request: {
+      url: "https://app.example.com/calibrations?calibration_session_id=77&session_id=sess_x&token_present=true&api_token=sec_y"
+    }
+  });
+  const allowPayload = JSON.parse(allowDelivered[0].trimEnd().split("\n")[2]);
+  assert.equal(
+    allowPayload.request.url,
+    "https://app.example.com/calibrations?calibration_session_id=77&session_id=[REDACTED]&token_present=true&api_token=[REDACTED]"
+  );
+  await close();
 });
 
 test("CommonJS dist/index.cjs exports matching API", async () => {

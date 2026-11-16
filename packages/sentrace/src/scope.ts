@@ -8,13 +8,23 @@ import type {
 } from "./types.ts";
 
 export class Scope implements ScopeLike {
-  private tags: Record<string, string> = {};
-  private user: User | null = null;
-  private contexts: Record<string, Record<string, unknown>> = {};
-  private extra: Record<string, unknown> = {};
-  private breadcrumbs: Breadcrumb[] = [];
-  private fingerprint: string[] | undefined;
-  private level: SeverityLevel | undefined;
+  declare private tags: Record<string, string>;
+  declare private user: User | null;
+  declare private contexts: Record<string, Record<string, unknown>>;
+  declare private extra: Record<string, unknown>;
+  declare private breadcrumbs: Breadcrumb[];
+  declare private fingerprint: string[] | undefined;
+  declare private level: SeverityLevel | undefined;
+
+  constructor() {
+    this.tags = {};
+    this.user = null;
+    this.contexts = {};
+    this.extra = {};
+    this.breadcrumbs = [];
+    this.fingerprint = undefined;
+    this.level = undefined;
+  }
 
   setTag(key: string, value: string | number | boolean): this {
     this.tags[String(key)] = String(value);
@@ -75,7 +85,10 @@ export class Scope implements ScopeLike {
 
     const normalized: Breadcrumb = {
       ...breadcrumb,
-      timestamp: breadcrumb.timestamp ?? new Date().toISOString()
+      timestamp:
+        breadcrumb.timestamp !== undefined && breadcrumb.timestamp !== null
+          ? breadcrumb.timestamp
+          : new Date().toISOString()
     };
 
     this.breadcrumbs.push(normalized);
@@ -153,12 +166,12 @@ export class Scope implements ScopeLike {
   }
 
   applyToEvent(event: SentryEvent, maxBreadcrumbs: number): SentryEvent {
-    const mergedTags = { ...this.tags, ...(event.tags ?? {}) };
+    const mergedTags = { ...this.tags, ...(event.tags ? event.tags : {}) };
     if (Object.keys(mergedTags).length > 0) {
       event.tags = mergedTags;
     }
 
-    const mergedExtra = { ...this.extra, ...(event.extra ?? {}) };
+    const mergedExtra = { ...this.extra, ...(event.extra ? event.extra : {}) };
     if (Object.keys(mergedExtra).length > 0) {
       event.extra = mergedExtra;
     }
@@ -169,7 +182,7 @@ export class Scope implements ScopeLike {
     }
     if (event.contexts) {
       for (const [k, v] of Object.entries(event.contexts)) {
-        mergedContexts[k] = { ...(mergedContexts[k] ?? {}), ...v };
+        mergedContexts[k] = { ...(mergedContexts[k] ? mergedContexts[k] : {}), ...v };
       }
     }
     if (Object.keys(mergedContexts).length > 0) {
@@ -190,7 +203,7 @@ export class Scope implements ScopeLike {
       event.fingerprint = [...this.fingerprint];
     }
 
-    const existingCrumbs = event.breadcrumbs?.values ?? [];
+    const existingCrumbs = event.breadcrumbs && event.breadcrumbs.values ? event.breadcrumbs.values : [];
     const combinedCrumbs = [...this.breadcrumbs, ...existingCrumbs].slice(-Math.max(0, maxBreadcrumbs));
     if (combinedCrumbs.length > 0) {
       event.breadcrumbs = { values: combinedCrumbs };

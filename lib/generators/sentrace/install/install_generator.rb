@@ -75,12 +75,18 @@ module Sentrace
                  config.release = ENV["APP_RELEASE"]
                end
 
-            4. Configure frontend browser capture (optional):
+            4. Configure frontend browser & React capture (optional):
                npm install sentrace
-               # In app/views/layouts/application.html.erb <head>:
-               #   <%= sentrace_meta_tags %>
+               # IMPORTANT: In app/views/layouts/application.html.erb <head>, render
+               # <%= sentrace_meta_tags %> BEFORE any synchronous <script>,
+               # javascript_pack_tag, javascript_include_tag, or yield(:head) tags:
+               #   <head>
+               #     <%= sentrace_meta_tags %>
+               #     <%= javascript_pack_tag "application" %>
+               #   </head>
                # In app/javascript/application.js:
                #   import * as Sentrace from "sentrace"
+               #   import { ErrorBoundary } from "sentrace/react" # optional React >= 16.8
                #   Sentrace.init()
         INSTRUCTIONS
       end

@@ -278,3 +278,112 @@ test("Zero-arg init() discovers Rails meta tags, correlates fetch X-Request-Id, 
     Sentrace.resetClient();
   }
 });
+
+test("XMLHttpRequest instrumentation survives getResponseHeader throwing on aborted/cross-origin requests and preserves falsy options", async () => {
+  Sentrace.resetClient();
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const prevXhr = globalThis.XMLHttpRequest;
+
+  const { fakeWindow, fakeDocument } = createFakeBrowserEnv({});
+  const mem = createMemoryTransport();
+
+  class FakeXMLHttpRequest {
+    constructor() {
+      this.status = 0;
+      this.listeners = new Map();
+      this.throwOnGetHeader = false;
+      this.headers = {};
+    }
+
+    open(_method, _url) {}
+
+    send(_body) {
+      const fns = this.listeners.get("loadend") ?? [];
+      for (const fn of fns) {
+        fn();
+      }
+    }
+
+    addEventListener(type, fn) {
+      const arr = this.listeners.get(type) ?? [];
+      arr.push(fn);
+      this.listeners.set(type, arr);
+    }
+
+    getResponseHeader(name) {
+      if (this.throwOnGetHeader) {
+        throw new Error("InvalidStateError: Failed to execute 'getResponseHeader' on 'XMLHttpRequest'");
+      }
+      return this.headers[name.toLowerCase()] ?? null;
+    }
+  }
+
+  try {
+    globalThis.window = fakeWindow;
+    globalThis.document = fakeDocument;
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest;
+
+    // Verify falsy numeric/boolean options are preserved (enabled: false, sampleRate: 0, maxBreadcrumbs: 0)
+    const disabledCfg = Sentrace.init({
+      dsn: "https://pub_xhr@shop.example.com/sentrace/3",
+      enabled: false,
+      sampleRate: 0,
+      maxBreadcrumbs: 0,
+      maxStackFrames: 0,
+      autoInstrumentBrowser: false,
+      railsIntegration: false,
+      transport: mem.factory
+    });
+    assert.equal(disabledCfg.enabled, false);
+    assert.equal(disabledCfg.sampleRate, 0);
+    assert.equal(disabledCfg.maxBreadcrumbs, 0);
+    assert.equal(disabledCfg.maxStackFrames, 0);
+
+    // Re-init with browser XHR instrumentation active
+    Sentrace.init({
+      dsn: "https://pub_xhr@shop.example.com/sentrace/3",
+      railsIntegration: false,
+      transport: mem.factory
+    });
+
+    // 1. Aborted/CORS XHR whose getResponseHeader throws MUST NOT throw uncaught error
+    const abortedXhr = new FakeXMLHttpRequest();
+    abortedXhr.throwOnGetHeader = true;
+    abortedXhr.status = 0;
+    abortedXhr.open("GET", "https://cdn.other-origin.example/asset.json?token=sec123&v=1");
+    assert.doesNotThrow(() => {
+      abortedXhr.send();
+    });
+
+    // 2. Failing Rails XHR with valid X-Request-Id correlates request_id tag
+    const failedXhr = new FakeXMLHttpRequest();
+    failedXhr.status = 502;
+    failedXhr.headers["x-request-id"] = "req-xhr-502";
+    failedXhr.open("POST", "https://shop.example.com/api/checkout?api_key=sec999");
+    failedXhr.send();
+
+    Sentrace.captureException(new Error("XHR checkout failed"));
+    assert.equal(mem.envelopes.length, 1);
+
+    const captured = mem.envelopes[0].event;
+    assert.equal(captured.tags.request_id, "req-xhr-502");
+    assert.equal(captured.breadcrumbs.values.length, 2);
+    assert.equal(captured.breadcrumbs.values[0].category, "xhr");
+    assert.equal(
+      captured.breadcrumbs.values[0].data.url,
+      "https://cdn.other-origin.example/asset.json?token=[REDACTED]&v=1"
+    );
+    assert.equal(captured.breadcrumbs.values[0].data.request_id, undefined);
+    assert.equal(captured.breadcrumbs.values[1].category, "xhr");
+    assert.equal(captured.breadcrumbs.values[1].data.request_id, "req-xhr-502");
+    assert.equal(captured.breadcrumbs.values[1].data.status_code, 502);
+
+    await Sentrace.close();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    globalThis.XMLHttpRequest = prevXhr;
+    Sentrace.resetClient();
+  }
+});

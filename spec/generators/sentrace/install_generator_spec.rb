@@ -40,15 +40,26 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
     expect(copied_migrations.size).to eq(5)
+    copied_migrations.each do |migration_path|
+      content = File.read(migration_path)
+      expect(content).to include("ActiveRecord::Migration[6.1]")
+      expect(content).not_to include("t.timestamptz")
+    end
 
     setup_task_path = File.join(@destination, "lib/tasks/sentrace_setup.rake")
     expect(File.exist?(setup_task_path)).to be(true)
-    expect(File.read(setup_task_path)).to include("task setup: :environment")
+    setup_task_content = File.read(setup_task_path)
+    expect(setup_task_content).to include("task setup: :environment")
+    expect(setup_task_content).to include("Sentrace::Bootstrapper.new.run")
 
     expect(output).to include("Sentry.init do |config|")
     expect(output).to include("@localhost:3000/sentrace/1")
     expect(output).to include("npm install sentrace")
     expect(output).to include("sentrace_meta_tags")
+    expect(output).to include("BEFORE any synchronous <script>")
+    expect(output).to include("javascript_pack_tag")
+    expect(output).to include("javascript_include_tag")
+    expect(output).to include("sentrace/react")
   end
 
   it "is idempotent when re-run in an already installed host application" do
@@ -60,5 +71,10 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
     expect(copied_migrations.size).to eq(5)
+    copied_migrations.each do |migration_path|
+      content = File.read(migration_path)
+      expect(content).to include("ActiveRecord::Migration[6.1]")
+      expect(content).not_to include("t.timestamptz")
+    end
   end
 end

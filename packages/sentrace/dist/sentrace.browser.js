@@ -5,6 +5,23 @@
   const SDK_NAME = "sentrace.javascript.browser";
   const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
+  function getGlobalObject()                          {
+    if (typeof globalThis !== "undefined") {
+      return globalThis                                      ;
+    }
+    if (typeof window !== "undefined") {
+      return window                                      ;
+    }
+    if (typeof self !== "undefined") {
+      return self                                      ;
+    }
+    return {};
+  }
+
+  function nullishCoalesce   (value                      , fallback   )    {
+    return value !== undefined && value !== null ? value : fallback;
+  }
+
   const DEFAULT_SENSITIVE_QUERY_KEYS = [
     "password",
     "passwd",
@@ -17,14 +34,24 @@
     "apikey",
     "authorization",
     "cookie",
-    "session",
-    "session_id",
     "credit_card",
     "card_number",
     "cvv",
     "cvc",
     "sentry_secret"
   ];
+
+  const AUTH_SESSION_EXACT_KEYS = [
+    "session",
+    "session_id",
+    "_session_id",
+    "rack.session",
+    "phpsessid",
+    "jsessionid",
+    "connect.sid"
+  ];
+
+  const AUTH_SESSION_KEY_REGEX = /^_(?:[a-z0-9_]+_)?session$|(?:^|[_.-])session[_.-]?token$/;
 
   function parseDsn(rawDsn                           )                   {
     if (!rawDsn || typeof rawDsn !== "string") {
@@ -39,7 +66,7 @@
     let uri     ;
     try {
       uri = new URL(trimmed);
-    } catch {
+    } catch (_err) {
       return null;
     }
 
@@ -77,7 +104,11 @@
     return `${dsn.protocol}://${authority}${dsn.pathPrefix}/api/${dsn.projectId}/envelope?${query}`;
   }
 
-  function scrubUrl(rawUrl                    , extraRedactFields           = [])                     {
+  function scrubUrl(
+    rawUrl                    ,
+    extraRedactFields           = [],
+    allowFields           = []
+  )                     {
     if (!rawUrl || typeof rawUrl !== "string") {
       return undefined;
     }
@@ -91,9 +122,18 @@
       ...DEFAULT_SENSITIVE_QUERY_KEYS,
       ...extraRedactFields.map((f) => String(f).toLowerCase())
     ];
+    const allowSet = new Set(
+      allowFields.map((f) => String(f).trim().toLowerCase()).filter(Boolean)
+    );
 
     const isSensitive = (key        )          => {
-      const lower = key.toLowerCase();
+      const lower = key.trim().toLowerCase();
+      if (allowSet.has(lower)) {
+        return false;
+      }
+      if (AUTH_SESSION_EXACT_KEYS.indexOf(lower) !== -1 || AUTH_SESSION_KEY_REGEX.test(lower)) {
+        return true;
+      }
       return redactPatterns.some((term) => lower.includes(term));
     };
 
@@ -119,8 +159,9 @@
         return `${parsed.pathname}${parsed.search}${parsed.hash}`;
       }
       return parsed.toString();
-    } catch {
-      return trimmed.split("?")[0]?.replace(/\/\/[^/@]+@/, "//") ?? trimmed;
+    } catch (_err) {
+      const withoutQuery = trimmed.split("?")[0];
+      return withoutQuery ? withoutQuery.replace(/\/\/[^/@]+@/, "//") : trimmed;
     }
   }
 
@@ -261,8 +302,9 @@
   )                       {
     if (err instanceof Error) {
       const frames = parseStackFrames(err.stack, maxFrames);
+      const ctorName = err.constructor && typeof err.constructor.name === "string" ? err.constructor.name : "";
       return {
-        type: err.name || err.constructor?.name || "Error",
+        type: err.name || ctorName || "Error",
         value: err.message || String(err),
         ...(frames.length > 0 ? { stacktrace: { frames } } : {}),
         mechanism: { type: mechanismType, handled }
@@ -271,18 +313,16 @@
 
     if (typeof err === "object" && err !== null) {
       const obj = err                           ;
-      const typeName =
-        (typeof obj.name === "string" && obj.name) ||
-        (typeof obj.constructor?.name === "string" && obj.constructor.name !== "Object"
-          ? obj.constructor.name
-          : "Error");
+      const ctor = obj.constructor                                  ;
+      const ctorName = ctor && typeof ctor.name === "string" && ctor.name !== "Object" ? ctor.name : "";
+      const typeName = (typeof obj.name === "string" && obj.name) || ctorName || "Error";
       const message =
         typeof obj.message === "string"
           ? obj.message
           : (() => {
               try {
                 return JSON.stringify(obj);
-              } catch {
+              } catch (_err) {
                 return String(obj);
               }
             })();
@@ -321,7 +361,7 @@
     while (current !== undefined && current !== null && depth < 5 && !seen.has(current)) {
       seen.add(current);
       const entry = normalizeSingleError(current, maxFrames, handled, mechanismType);
-      if (depth === 0 && !entry.stacktrace && syntheticException?.stack) {
+      if (depth === 0 && !entry.stacktrace && syntheticException && syntheticException.stack) {
         const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames);
         if (fallbackFrames.length > 0) {
           entry.stacktrace = { frames: fallbackFrames };
@@ -346,13 +386,16 @@
 
   // --- scope.ts ---
   class Scope                      {
-            tags                         = {};
-            user              = null;
-            contexts                                          = {};
-            extra                          = {};
-            breadcrumbs               = [];
-            fingerprint                      ;
-            level                           ;
+
+    constructor() {
+      this.tags = {};
+      this.user = null;
+      this.contexts = {};
+      this.extra = {};
+      this.breadcrumbs = [];
+      this.fingerprint = undefined;
+      this.level = undefined;
+    }
 
     setTag(key        , value                           )       {
       this.tags[String(key)] = String(value);
@@ -413,7 +456,10 @@
 
       const normalized             = {
         ...breadcrumb,
-        timestamp: breadcrumb.timestamp ?? new Date().toISOString()
+        timestamp:
+          breadcrumb.timestamp !== undefined && breadcrumb.timestamp !== null
+            ? breadcrumb.timestamp
+            : new Date().toISOString()
       };
 
       this.breadcrumbs.push(normalized);
@@ -491,12 +537,12 @@
     }
 
     applyToEvent(event             , maxBreadcrumbs        )              {
-      const mergedTags = { ...this.tags, ...(event.tags ?? {}) };
+      const mergedTags = { ...this.tags, ...(event.tags ? event.tags : {}) };
       if (Object.keys(mergedTags).length > 0) {
         event.tags = mergedTags;
       }
 
-      const mergedExtra = { ...this.extra, ...(event.extra ?? {}) };
+      const mergedExtra = { ...this.extra, ...(event.extra ? event.extra : {}) };
       if (Object.keys(mergedExtra).length > 0) {
         event.extra = mergedExtra;
       }
@@ -507,7 +553,7 @@
       }
       if (event.contexts) {
         for (const [k, v] of Object.entries(event.contexts)) {
-          mergedContexts[k] = { ...(mergedContexts[k] ?? {}), ...v };
+          mergedContexts[k] = { ...(mergedContexts[k] ? mergedContexts[k] : {}), ...v };
         }
       }
       if (Object.keys(mergedContexts).length > 0) {
@@ -528,7 +574,7 @@
         event.fingerprint = [...this.fingerprint];
       }
 
-      const existingCrumbs = event.breadcrumbs?.values ?? [];
+      const existingCrumbs = event.breadcrumbs && event.breadcrumbs.values ? event.breadcrumbs.values : [];
       const combinedCrumbs = [...this.breadcrumbs, ...existingCrumbs].slice(-Math.max(0, maxBreadcrumbs));
       if (combinedCrumbs.length > 0) {
         event.breadcrumbs = { values: combinedCrumbs };
@@ -540,15 +586,15 @@
 
   // --- envelope.ts ---
   function generateEventId()         {
-    const g = globalThis
+    const g = getGlobalObject()
 
      ;
 
-    if (g.crypto?.randomUUID) {
+    if (g.crypto && typeof g.crypto.randomUUID === "function") {
       return g.crypto.randomUUID().replace(/-/g, "").toLowerCase();
     }
 
-    if (g.crypto?.getRandomValues) {
+    if (g.crypto && typeof g.crypto.getRandomValues === "function") {
       const bytes = g.crypto.getRandomValues(new Uint8Array(16));
       let hex = "";
       for (let i = 0; i < bytes.length; i += 1) {
@@ -598,23 +644,26 @@
 
     const sendViaBeacon = (envelope        )          => {
       try {
-        const nav = (globalThis                                                                             ).navigator;
+        const nav = (
+          getGlobalObject()
+        ).navigator;
         if (nav && typeof nav.sendBeacon === "function") {
           return nav.sendBeacon(endpointUrl, envelope);
         }
-      } catch {
+      } catch (_err) {
         // Ignore sendBeacon errors
       }
       return false;
     };
 
     const send = (envelope        )                                        => {
-      const doc = (globalThis                                               ).document;
-      if (doc?.visibilityState === "hidden" && sendViaBeacon(envelope)) {
+      const g = getGlobalObject();
+      const doc = (g                                               ).document;
+      if (doc && doc.visibilityState === "hidden" && sendViaBeacon(envelope)) {
         return Promise.resolve({ statusCode: 200 });
       }
 
-      const fetchFn = (globalThis                            ).fetch;
+      const fetchFn = (g                            ).fetch;
       if (typeof fetchFn !== "function") {
         const ok = sendViaBeacon(envelope);
         return Promise.resolve({ statusCode: ok ? 200 : 0 });
@@ -636,15 +685,20 @@
 
       const requestPromise = fetchFn(endpointUrl, initOptions)
         .then((res) => ({ statusCode: res.status }))
-        .catch(() => {
+        .catch((_err) => {
           const fallbackOk = sendViaBeacon(envelope);
           return { statusCode: fallbackOk ? 200 : 0 };
         });
 
       pending.add(requestPromise);
-      void requestPromise.finally(() => {
-        pending.delete(requestPromise);
-      });
+      void requestPromise.then(
+        () => {
+          pending.delete(requestPromise);
+        },
+        () => {
+          pending.delete(requestPromise);
+        }
+      );
 
       return requestPromise;
     };
@@ -654,7 +708,13 @@
         return true;
       }
 
-      const allDone = Promise.allSettled(Array.from(pending)).then(() => true);
+      const settled = Array.from(pending).map((p) =>
+        p.then(
+          () => undefined,
+          () => undefined
+        )
+      );
+      const allDone = Promise.all(settled).then(() => true);
       if (timeout <= 0) {
         return allDone;
       }
@@ -711,22 +771,25 @@
 
   function installBrowserInstrumentation(hooks                             )             {
     const cleanups                    = [];
-    const g = globalThis                           ;
-    const win = (g.window ?? g)
+    const g = getGlobalObject();
+    const win = (g.window !== undefined && g.window !== null ? g.window : g)
 
      ;
     const doc = g.document
 
                  ;
 
-    if (typeof win?.addEventListener === "function" && typeof win?.removeEventListener === "function") {
+    if (win && typeof win.addEventListener === "function" && typeof win.removeEventListener === "function") {
       const errorListener = (rawEvent         )       => {
         const ev = rawEvent
 
-         ;
-        const err = ev?.error ?? new Error(ev?.message || "Uncaught window error");
+                     ;
+        const err =
+          ev && ev.error !== undefined && ev.error !== null
+            ? ev.error
+            : new Error((ev && ev.message) || "Uncaught window error");
         const fallbackFrame                         =
-          ev?.filename
+          ev && ev.filename
             ? {
                 filename: ev.filename,
                 function: "?",
@@ -744,9 +807,9 @@
       };
 
       const rejectionListener = (rawEvent         )       => {
-        const ev = rawEvent                        ;
+        const ev = rawEvent                                    ;
         const reason = ev && "reason" in ev ? ev.reason : new Error("Unhandled Promise rejection");
-        hooks.onError(reason ?? new Error("Unhandled Promise rejection"), {
+        hooks.onError(reason !== undefined && reason !== null ? reason : new Error("Unhandled Promise rejection"), {
           handled: false,
           mechanismType: "onunhandledrejection"
         });
@@ -755,27 +818,31 @@
       win.addEventListener("error", errorListener);
       win.addEventListener("unhandledrejection", rejectionListener);
       cleanups.push(() => {
-        win.removeEventListener?.("error", errorListener);
-        win.removeEventListener?.("unhandledrejection", rejectionListener);
+        if (typeof win.removeEventListener === "function") {
+          win.removeEventListener("error", errorListener);
+          win.removeEventListener("unhandledrejection", rejectionListener);
+        }
       });
 
-      let lastHref = win.location?.href;
+      let lastHref = win.location ? win.location.href : undefined;
       const popstateListener = ()       => {
-        const nextHref = win.location?.href;
+        const nextHref = win.location ? win.location.href : undefined;
         hooks.onBreadcrumb({
           type: "navigation",
           category: "navigation",
           level: "info",
           data: {
-            from: scrubUrl(lastHref, hooks.redactFields),
-            to: scrubUrl(nextHref, hooks.redactFields)
+            from: scrubUrl(lastHref, hooks.redactFields, hooks.allowFields),
+            to: scrubUrl(nextHref, hooks.redactFields, hooks.allowFields)
           }
         });
         lastHref = nextHref;
       };
       win.addEventListener("popstate", popstateListener);
       cleanups.push(() => {
-        win.removeEventListener?.("popstate", popstateListener);
+        if (typeof win.removeEventListener === "function") {
+          win.removeEventListener("popstate", popstateListener);
+        }
       });
 
       if (win.history) {
@@ -784,13 +851,14 @@
           const original = historyObj[methodName];
           if (typeof original === "function") {
             historyObj[methodName] = function patchedHistory(...args           )          {
-              const prev = lastHref ?? win.location?.href;
+              const currentLocHref = win.location ? win.location.href : undefined;
+              const prev = lastHref !== undefined && lastHref !== null ? lastHref : currentLocHref;
               const result = original.apply(this, args);
-              let nextUrl = win.location?.href;
+              let nextUrl = win.location ? win.location.href : undefined;
               if ((!nextUrl || nextUrl === prev) && args[2] !== undefined && args[2] !== null) {
                 try {
                   nextUrl = prev ? new URL(String(args[2]), prev).toString() : String(args[2]);
-                } catch {
+                } catch (_err) {
                   nextUrl = String(args[2]);
                 }
               }
@@ -800,8 +868,8 @@
                 category: "navigation",
                 level: "info",
                 data: {
-                  from: scrubUrl(prev, hooks.redactFields),
-                  to: scrubUrl(nextUrl, hooks.redactFields)
+                  from: scrubUrl(prev, hooks.redactFields, hooks.allowFields),
+                  to: scrubUrl(nextUrl, hooks.redactFields, hooks.allowFields)
                 }
               });
               return result;
@@ -816,17 +884,19 @@
 
     if (doc && typeof doc.addEventListener === "function" && typeof doc.removeEventListener === "function") {
       const clickListener = (rawEvent         )       => {
-        const ev = rawEvent                        ;
+        const ev = rawEvent                                    ;
         hooks.onBreadcrumb({
           type: "ui",
           category: "ui.click",
           level: "info",
-          message: describeElement(ev?.target)
+          message: describeElement(ev ? ev.target : undefined)
         });
       };
       doc.addEventListener("click", clickListener, true);
       cleanups.push(() => {
-        doc.removeEventListener?.("click", clickListener, true);
+        if (typeof doc.removeEventListener === "function") {
+          doc.removeEventListener("click", clickListener, true);
+        }
       });
     }
 
@@ -837,35 +907,40 @@
         init
       )                    {
         if (init && init[SENTRACE_INTERNAL_FETCH_FLAG]) {
-          return originalFetch.call(globalThis, input, init);
+          return originalFetch.call(g, input, init);
         }
 
+        const inputObj = typeof input === "object" && input !== null ? (input                                       ) : null;
         const rawUrl =
           typeof input === "string"
             ? input
             : input instanceof URL
               ? input.toString()
-              : typeof (input                    )?.url === "string"
-                ? (input                   ).url
+              : inputObj && typeof inputObj.url === "string"
+                ? inputObj.url
                 : "";
 
         if (isInternalEndpoint(rawUrl, hooks.endpointUrl)) {
-          return originalFetch.call(globalThis, input, init);
+          return originalFetch.call(g, input, init);
         }
 
-        const method = (
-          init?.method ??
-          (typeof (input                       )?.method === "string" ? (input                      ).method : "GET")
-        ).toUpperCase();
-        const safeUrl = scrubUrl(rawUrl, hooks.redactFields);
+        const rawMethod =
+          init && init.method !== undefined && init.method !== null
+            ? init.method
+            : inputObj && typeof inputObj.method === "string"
+              ? inputObj.method
+              : "GET";
+        const method = String(rawMethod).toUpperCase();
+        const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
 
-        return originalFetch.call(globalThis, input, init).then(
+        return originalFetch.call(g, input, init).then(
           (response) => {
-            const requestId =
-              typeof response?.headers?.get === "function"
-                ? response.headers.get("x-request-id") ?? undefined
-                : undefined;
-            const status = typeof response?.status === "number" ? response.status : undefined;
+            let requestId                    ;
+            if (response && response.headers && typeof response.headers.get === "function") {
+              const rawHeader = response.headers.get("x-request-id");
+              requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+            }
+            const status = response && typeof response.status === "number" ? response.status : undefined;
 
             if (requestId && status !== undefined && status >= 400) {
               hooks.onCorrelatedRequestId(requestId);
@@ -912,7 +987,12 @@
 
                  ;
 
-    if (XhrCtor?.prototype && typeof XhrCtor.prototype.open === "function" && typeof XhrCtor.prototype.send === "function") {
+    if (
+      XhrCtor &&
+      XhrCtor.prototype &&
+      typeof XhrCtor.prototype.open === "function" &&
+      typeof XhrCtor.prototype.send === "function"
+    ) {
       const proto = XhrCtor.prototype;
       const origOpen = proto.open ;
       const origSend = proto.send ;
@@ -936,8 +1016,15 @@
           const onLoadEnd = ()       => {
             const status = typeof this.status === "number" ? this.status : undefined;
             const getHeader = this.getResponseHeader                                                 ;
-            const requestId =
-              typeof getHeader === "function" ? getHeader.call(this, "x-request-id") ?? undefined : undefined;
+            let requestId                    ;
+            if (typeof getHeader === "function") {
+              try {
+                const rawHeader = getHeader.call(this, "x-request-id");
+                requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+              } catch (_err) {
+                requestId = undefined;
+              }
+            }
 
             if (requestId && status !== undefined && status >= 400) {
               hooks.onCorrelatedRequestId(requestId);
@@ -949,7 +1036,7 @@
               level: status !== undefined && status >= 400 ? "warning" : "info",
               data: {
                 method: meta.method,
-                url: scrubUrl(meta.url, hooks.redactFields),
+                url: scrubUrl(meta.url, hooks.redactFields, hooks.allowFields),
                 ...(status !== undefined ? { status_code: status } : {}),
                 ...(requestId ? { request_id: requestId } : {})
               }
@@ -974,7 +1061,7 @@
       for (const fn of cleanups.splice(0)) {
         try {
           fn();
-        } catch {
+        } catch (_err) {
           // Ignore teardown errors
         }
       }
@@ -990,7 +1077,8 @@
     if (typeof doc.querySelector === "function") {
       const el = doc.querySelector(`meta[name="${metaName}"]`);
       if (el) {
-        const val = (typeof el.getAttribute === "function" ? el.getAttribute("content") : null) ?? el.content;
+        const attrVal = typeof el.getAttribute === "function" ? el.getAttribute("content") : null;
+        const val = attrVal !== null && attrVal !== undefined ? attrVal : el.content;
         if (typeof val === "string" && val.trim()) {
           return val.trim();
         }
@@ -1001,9 +1089,11 @@
       const metas = doc.getElementsByTagName("meta");
       for (let i = 0; i < metas.length; i += 1) {
         const item = metas[i] ;
-        const itemName = (typeof item.getAttribute === "function" ? item.getAttribute("name") : null) ?? item.name;
+        const attrName = typeof item.getAttribute === "function" ? item.getAttribute("name") : null;
+        const itemName = attrName !== null && attrName !== undefined ? attrName : item.name;
         if (itemName === metaName) {
-          const val = (typeof item.getAttribute === "function" ? item.getAttribute("content") : null) ?? item.content;
+          const attrVal = typeof item.getAttribute === "function" ? item.getAttribute("content") : null;
+          const val = attrVal !== null && attrVal !== undefined ? attrVal : item.content;
           if (typeof val === "string" && val.trim()) {
             return val.trim();
           }
@@ -1014,11 +1104,24 @@
     return undefined;
   }
 
+  function readHeaderSafely(headers                                                    , name        )                     {
+    if (!headers || typeof headers.get !== "function") {
+      return undefined;
+    }
+    try {
+      const raw = headers.get(name);
+      return raw !== null && raw !== undefined ? raw : undefined;
+    } catch (_err) {
+      return undefined;
+    }
+  }
+
   /**
    * Reads Rails `<meta name="sentrace-*">` tags emitted by `sentrace_meta_tags`.
    */
   function readRailsMeta(customDoc          )                  {
-    const doc = (customDoc ?? (globalThis                          ).document)                                 ;
+    const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
+    const doc = rawDoc                                 ;
     if (!doc) {
       return {};
     }
@@ -1039,20 +1142,22 @@
     hooks                       ,
     customDoc
   )             {
-    const doc = (customDoc ?? (globalThis                          ).document)                                 ;
+    const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
+    const doc = rawDoc                                 ;
     if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
       return () => {};
     }
 
     const onTurboVisit = (rawEvent         )       => {
-      const detail = (rawEvent                                                  )?.detail;
+      const ev = rawEvent                                                              ;
+      const detail = ev ? ev.detail : undefined;
       hooks.onBreadcrumb({
         type: "navigation",
         category: "turbo.visit",
         level: "info",
         data: {
-          url: scrubUrl(detail?.url, hooks.redactFields),
-          ...(detail?.action ? { action: detail.action } : {})
+          url: scrubUrl(detail ? detail.url : undefined, hooks.redactFields, hooks.allowFields),
+          ...(detail && detail.action ? { action: detail.action } : {})
         }
       });
     };
@@ -1067,19 +1172,22 @@
     const onTurboFetchRequestError = (rawEvent         )       => {
       const ev = rawEvent
 
-       ;
-      const rawUrl = ev?.detail?.url ? String(ev.detail.url) : ev?.detail?.request?.url;
-      const safeUrl = scrubUrl(rawUrl, hooks.redactFields);
-      const requestId = ev?.detail?.response?.headers?.get?.("x-request-id") ?? undefined;
+                   ;
+      const detail = ev ? ev.detail : undefined;
+      const rawUrl =
+        detail && detail.url ? String(detail.url) : detail && detail.request ? detail.request.url : undefined;
+      const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
+      const requestId = readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id");
       if (requestId) {
         hooks.onRequestIdChange(requestId);
       }
 
+      const detailErr = detail ? detail.error : undefined;
       const underlying =
-        ev?.detail?.error instanceof Error
-          ? ev.detail.error
+        detailErr instanceof Error
+          ? detailErr
           : new Error(`Turbo fetch request failed${safeUrl ? ` for ${safeUrl}` : ""}`);
-      if (!(ev?.detail?.error instanceof Error)) {
+      if (!(detailErr instanceof Error)) {
         underlying.name = "TurboFetchRequestError";
       }
 
@@ -1100,12 +1208,13 @@
     const onTurboFrameMissing = (rawEvent         )       => {
       const ev = rawEvent
 
-       ;
+                   ;
 
-      const frameId = ev?.target?.id || "unknown";
-      const status = ev?.detail?.response?.status;
-      const safeUrl = scrubUrl(ev?.detail?.response?.url, hooks.redactFields);
-      const requestId = ev?.detail?.response?.headers?.get?.("x-request-id") ?? undefined;
+      const frameId = (ev && ev.target && ev.target.id) || "unknown";
+      const response = ev && ev.detail ? ev.detail.response : undefined;
+      const status = response ? response.status : undefined;
+      const safeUrl = scrubUrl(response ? response.url : undefined, hooks.redactFields, hooks.allowFields);
+      const requestId = readHeaderSafely(response ? response.headers : undefined, "x-request-id");
       if (requestId) {
         hooks.onRequestIdChange(requestId);
       }
@@ -1138,10 +1247,12 @@
     doc.addEventListener("turbo:frame-missing", onTurboFrameMissing);
 
     return () => {
-      doc.removeEventListener?.("turbo:visit", onTurboVisit);
-      doc.removeEventListener?.("turbo:load", onTurboLoad);
-      doc.removeEventListener?.("turbo:fetch-request-error", onTurboFetchRequestError);
-      doc.removeEventListener?.("turbo:frame-missing", onTurboFrameMissing);
+      if (typeof doc.removeEventListener === "function") {
+        doc.removeEventListener("turbo:visit", onTurboVisit);
+        doc.removeEventListener("turbo:load", onTurboLoad);
+        doc.removeEventListener("turbo:fetch-request-error", onTurboFetchRequestError);
+        doc.removeEventListener("turbo:frame-missing", onTurboFrameMissing);
+      }
     };
   }
 
@@ -1161,11 +1272,10 @@
       typeof application.handleError === "function" ? application.handleError.bind(application) : null;
 
     const wrappedHandler = (error       , message        , detail                          = {})       => {
+      const ctrl = detail.controller                                        ;
       const identifier =
         (typeof detail.identifier === "string" && detail.identifier) ||
-        (typeof (detail.controller                                       )?.identifier === "string"
-          ? (detail.controller                          ).identifier
-          : undefined);
+        (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
       const action = typeof detail.action === "string" ? detail.action : undefined;
 
       captureFn(error, {
@@ -1206,34 +1316,34 @@
   }
 
   class BrowserClient {
-             config                    ;
-                     options                 ;
-                     parsedDsn                  ;
-                     endpointUrl               ;
-                     transport                  ;
-                     redactFields          ;
-            closed = false;
-                     teardowns                    = [];
 
     constructor(options                 , scope       ) {
+      this.closed = false;
+      this.teardowns = [];
+
       const useRails = options.railsIntegration !== false;
       const railsMeta = useRails ? readRailsMeta() : {};
 
-      const resolvedDsn = options.dsn !== undefined ? options.dsn : (railsMeta.dsn ?? null);
-      const resolvedEnv = options.environment ?? railsMeta.environment ?? "production";
+      const resolvedDsn =
+        options.dsn !== undefined ? options.dsn : nullishCoalesce(railsMeta.dsn, null);
+      const resolvedEnv = nullishCoalesce(
+        options.environment,
+        nullishCoalesce(railsMeta.environment, "production")
+      );
       const resolvedRelease =
-        options.release !== undefined ? options.release : (railsMeta.release ?? null);
+        options.release !== undefined ? options.release : nullishCoalesce(railsMeta.release, null);
 
       this.options = options;
       this.redactFields = options.redactFields ? [...options.redactFields] : [];
+      this.allowFields = options.allowFields ? [...options.allowFields] : [];
       this.config = Object.freeze({
-        enabled: options.enabled ?? true,
-        dsn: resolvedDsn ?? null,
+        enabled: nullishCoalesce(options.enabled, true),
+        dsn: nullishCoalesce(resolvedDsn, null),
         environment: resolvedEnv,
-        release: resolvedRelease ?? null,
-        sampleRate: options.sampleRate ?? 1.0,
-        maxBreadcrumbs: options.maxBreadcrumbs ?? 20,
-        maxStackFrames: options.maxStackFrames ?? 50
+        release: nullishCoalesce(resolvedRelease, null),
+        sampleRate: nullishCoalesce(options.sampleRate, 1.0),
+        maxBreadcrumbs: nullishCoalesce(options.maxBreadcrumbs, 20),
+        maxStackFrames: nullishCoalesce(options.maxStackFrames, 50)
       });
 
       if (railsMeta.requestId) {
@@ -1254,6 +1364,7 @@
           installBrowserInstrumentation({
             endpointUrl: this.endpointUrl,
             redactFields: this.redactFields,
+            allowFields: this.allowFields,
             onError: (err, meta) => {
               this.captureExceptionWithMeta(err, scope, undefined, meta);
             },
@@ -1271,6 +1382,7 @@
         this.teardowns.push(
           installRailsTurboInstrumentation({
             redactFields: this.redactFields,
+            allowFields: this.allowFields,
             onBreadcrumb: (crumb) => {
               this.recordBreadcrumb(crumb, scope);
             },
@@ -1390,20 +1502,19 @@
           ? partialEvent.event_id.replace(/-/g, "").toLowerCase()
           : generateEventId();
 
+      const effectiveRelease = nullishCoalesce(partialEvent.release, this.config.release);
       const baseEvent              = {
         ...partialEvent,
         event_id: eventId,
-        timestamp: partialEvent.timestamp ?? new Date().toISOString(),
+        timestamp: nullishCoalesce(partialEvent.timestamp, new Date().toISOString()),
         platform: "javascript",
-        environment: partialEvent.environment ?? this.config.environment,
-        ...(partialEvent.release ?? this.config.release
-          ? { release: (partialEvent.release ?? this.config.release) || undefined }
-          : {}),
-        sdk: partialEvent.sdk ?? { name: SDK_NAME, version: VERSION }
+        environment: nullishCoalesce(partialEvent.environment, this.config.environment),
+        ...(effectiveRelease ? { release: effectiveRelease } : {}),
+        sdk: nullishCoalesce(partialEvent.sdk, { name: SDK_NAME, version: VERSION })
       };
 
       return this.prepareAndSend(baseEvent, scope, {
-        ...hint,
+        ...(hint ? hint : {}),
         event_id: eventId
       });
     }
@@ -1438,16 +1549,20 @@
       }
 
       if (!event.request) {
-        const currentHref = (globalThis                                                                               )
-          .window?.location?.href ?? (globalThis                                    ).location?.href;
-        const safeHref = scrubUrl(currentHref, this.redactFields);
+        const g = getGlobalObject()
+
+         ;
+        const winHref = g.window && g.window.location ? g.window.location.href : undefined;
+        const globalHref = g.location ? g.location.href : undefined;
+        const currentHref = winHref !== undefined && winHref !== null ? winHref : globalHref;
+        const safeHref = scrubUrl(currentHref, this.redactFields, this.allowFields);
         if (safeHref) {
           event.request = { url: safeHref };
         }
       } else if (event.request.url) {
         event.request = {
           ...event.request,
-          url: scrubUrl(event.request.url, this.redactFields)
+          url: scrubUrl(event.request.url, this.redactFields, this.allowFields)
         };
       }
 
@@ -1472,12 +1587,14 @@
 
             shouldFilterEvent(event             )          {
       const ignoreErrors = this.options.ignoreErrors;
+      const excValues = event.exception && event.exception.values ? event.exception.values : [];
+
       if (ignoreErrors && ignoreErrors.length > 0) {
         const candidates           = [];
         if (event.message) {
           candidates.push(event.message);
         }
-        for (const exc of event.exception?.values ?? []) {
+        for (const exc of excValues) {
           if (exc.value) {
             candidates.push(exc.value);
             candidates.push(`${exc.type}: ${exc.value}`);
@@ -1488,7 +1605,14 @@
         }
       }
 
-      const frames = event.exception?.values?.flatMap((v) => v.stacktrace?.frames ?? []) ?? [];
+      const frames               = [];
+      for (const v of excValues) {
+        if (v.stacktrace && v.stacktrace.frames) {
+          for (const frame of v.stacktrace.frames) {
+            frames.push(frame);
+          }
+        }
+      }
       const filenames = frames.map((f) => f.filename || f.abs_path || "").filter(Boolean);
 
       if (this.options.denyUrls && this.options.denyUrls.length > 0 && filenames.length > 0) {
@@ -1537,7 +1661,7 @@
   }
 
   function getClient()                            {
-    return activeClient ?? undefined;
+    return activeClient ? activeClient : undefined;
   }
 
   function isInitialized()          {
@@ -1586,7 +1710,7 @@
 
   function captureEvent(event                      , hint                  )         {
     if (!activeClient) {
-      return event.event_id ?? generateEventId();
+      return nullishCoalesce(event.event_id, generateEventId());
     }
     return activeClient.captureEvent(event, activeScope(), hint);
   }

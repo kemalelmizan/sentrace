@@ -136,8 +136,9 @@ function normalizeSingleError(
 ): SentryExceptionValue {
   if (err instanceof Error) {
     const frames = parseStackFrames(err.stack, maxFrames);
+    const ctorName = err.constructor && typeof err.constructor.name === "string" ? err.constructor.name : "";
     return {
-      type: err.name || err.constructor?.name || "Error",
+      type: err.name || ctorName || "Error",
       value: err.message || String(err),
       ...(frames.length > 0 ? { stacktrace: { frames } } : {}),
       mechanism: { type: mechanismType, handled }
@@ -146,18 +147,16 @@ function normalizeSingleError(
 
   if (typeof err === "object" && err !== null) {
     const obj = err as Record<string, unknown>;
-    const typeName =
-      (typeof obj.name === "string" && obj.name) ||
-      (typeof obj.constructor?.name === "string" && obj.constructor.name !== "Object"
-        ? obj.constructor.name
-        : "Error");
+    const ctor = obj.constructor as { name?: unknown } | undefined;
+    const ctorName = ctor && typeof ctor.name === "string" && ctor.name !== "Object" ? ctor.name : "";
+    const typeName = (typeof obj.name === "string" && obj.name) || ctorName || "Error";
     const message =
       typeof obj.message === "string"
         ? obj.message
         : (() => {
             try {
               return JSON.stringify(obj);
-            } catch {
+            } catch (_err) {
               return String(obj);
             }
           })();
@@ -196,7 +195,7 @@ export function extractExceptionChain(
   while (current !== undefined && current !== null && depth < 5 && !seen.has(current)) {
     seen.add(current);
     const entry = normalizeSingleError(current, maxFrames, handled, mechanismType);
-    if (depth === 0 && !entry.stacktrace && syntheticException?.stack) {
+    if (depth === 0 && !entry.stacktrace && syntheticException && syntheticException.stack) {
       const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames);
       if (fallbackFrames.length > 0) {
         entry.stacktrace = { frames: fallbackFrames };

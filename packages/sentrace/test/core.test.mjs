@@ -31,6 +31,14 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
     "https://shop.example.com/reset?token=[REDACTED]&step=2&custom_pin=[REDACTED]"
   );
   assert.equal(scrubUrl("/checkout?api_key=xyz&ok=1"), "/checkout?api_key=[REDACTED]&ok=1");
+  assert.equal(
+    scrubUrl(
+      "/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=sess_1&_myapp_session=cookie_2&user_session_token=tok_3&TOKEN_PRESENT=1&access_token=sec_4",
+      [],
+      ["token_present"]
+    ),
+    "/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=[REDACTED]&_myapp_session=[REDACTED]&user_session_token=[REDACTED]&TOKEN_PRESENT=1&access_token=[REDACTED]"
+  );
 });
 
 test("parseStackFrames parses V8, Firefox, and Safari stacks into oldest-to-newest Sentry frames", () => {

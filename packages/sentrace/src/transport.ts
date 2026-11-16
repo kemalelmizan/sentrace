@@ -1,3 +1,4 @@
+import { getGlobalObject } from "./dsn.ts";
 import type { Transport, TransportMakeRequestResponse } from "./types.ts";
 
 export const SENTRACE_INTERNAL_FETCH_FLAG = "__sentraceInternalRequest";
@@ -7,23 +8,26 @@ export function createBrowserTransport(endpointUrl: string): Transport {
 
   const sendViaBeacon = (envelope: string): boolean => {
     try {
-      const nav = (globalThis as { navigator?: { sendBeacon?: (url: string, data: BodyInit) => boolean } }).navigator;
+      const nav = (
+        getGlobalObject() as { navigator?: { sendBeacon?: (url: string, data: BodyInit) => boolean } }
+      ).navigator;
       if (nav && typeof nav.sendBeacon === "function") {
         return nav.sendBeacon(endpointUrl, envelope);
       }
-    } catch {
+    } catch (_err) {
       // Ignore sendBeacon errors
     }
     return false;
   };
 
   const send = (envelope: string): Promise<TransportMakeRequestResponse> => {
-    const doc = (globalThis as { document?: { visibilityState?: string } }).document;
-    if (doc?.visibilityState === "hidden" && sendViaBeacon(envelope)) {
+    const g = getGlobalObject();
+    const doc = (g as { document?: { visibilityState?: string } }).document;
+    if (doc && doc.visibilityState === "hidden" && sendViaBeacon(envelope)) {
       return Promise.resolve({ statusCode: 200 });
     }
 
-    const fetchFn = (globalThis as { fetch?: typeof fetch }).fetch;
+    const fetchFn = (g as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn !== "function") {
       const ok = sendViaBeacon(envelope);
       return Promise.resolve({ statusCode: ok ? 200 : 0 });
@@ -45,15 +49,20 @@ export function createBrowserTransport(endpointUrl: string): Transport {
 
     const requestPromise = fetchFn(endpointUrl, initOptions)
       .then((res) => ({ statusCode: res.status }))
-      .catch(() => {
+      .catch((_err) => {
         const fallbackOk = sendViaBeacon(envelope);
         return { statusCode: fallbackOk ? 200 : 0 };
       });
 
     pending.add(requestPromise);
-    void requestPromise.finally(() => {
-      pending.delete(requestPromise);
-    });
+    void requestPromise.then(
+      () => {
+        pending.delete(requestPromise);
+      },
+      () => {
+        pending.delete(requestPromise);
+      }
+    );
 
     return requestPromise;
   };
@@ -63,7 +72,13 @@ export function createBrowserTransport(endpointUrl: string): Transport {
       return true;
     }
 
-    const allDone = Promise.allSettled(Array.from(pending)).then(() => true);
+    const settled = Array.from(pending).map((p) =>
+      p.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    const allDone = Promise.all(settled).then(() => true);
     if (timeout <= 0) {
       return allDone;
     }

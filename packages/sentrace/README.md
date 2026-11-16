@@ -4,13 +4,15 @@ Zero-dependency, `@sentry/browser`-compatible frontend error capturing SDK for [
 
 ## Highlights
 
-- **`@sentry/browser`-compatible API**: `init`, `captureException`, `captureMessage`, `captureEvent`, `addBreadcrumb`, `setTag`, `setTags`, `setUser`, `setContext`, `setExtra`, `withScope`, `getCurrentScope`, `flush`, `close`, `beforeSend`, `ignoreErrors`, `denyUrls`, and `allowUrls`.
+- **`@sentry/browser`-compatible API**: `init`, `captureException`, `captureMessage`, `captureEvent`, `addBreadcrumb`, `setTag`, `setTags`, `setUser`, `setContext`, `setExtra`, `withScope`, `getCurrentScope`, `flush`, `close`, `beforeSend`, `ignoreErrors`, `denyUrls`, `allowUrls`, `redactFields`, and `allowFields`.
+- **React `<ErrorBoundary>` (`sentrace/react`)**: Drop-in `@sentry/react`-compatible `ErrorBoundary` and `withErrorBoundary` (`react >= 16.8.0` optional `peerDependency` only) capturing unhandled render/lifecycle errors with `mechanism: { type: "react.error_boundary", handled: false }` and `contexts.react.componentStack`.
+- **Legacy & Modern Toolchain Ready**: Emits pure ES2018/ES2019 bundles (zero ES2020+ syntax tokens) with both `package.json` `"exports"` and a top-level `react/` directory so `@rails/webpacker 5.4` (`webpack 4.46` / Acorn 6), TypeScript `>= 4.4` (`"moduleResolution": "node"`), Webpack 5, and Vite all work out of the box without `node_modules` transpilation.
 - **Standard Sentry v7 Envelopes**: Uses `fetch(..., { keepalive: true })` with `navigator.sendBeacon` unload/offline fallback and parses V8/Chromium, Firefox/SpiderMonkey, and Safari/JavaScriptCore stack traces (`lineno` + `colno`).
 - **Cohesive Ruby on Rails & Hotwire integration**:
   - Zero-argument `Sentrace.init()` auto-discovers `<meta name="sentrace-*">` tags rendered by Rails `sentrace_meta_tags`.
   - Built-in Hotwire Turbo hooks (`turbo:visit`, `turbo:load`, `turbo:fetch-request-error`, `turbo:frame-missing`) and `registerStimulusErrorHandler(application)` for Stimulus controllers.
-  - Automatic `X-Request-Id` (`request_id`) extraction from Rails `fetch` / `XMLHttpRequest` / Turbo responses so AI coding agents can correlate frontend JS crashes with backend Rails exceptions via Sentrace MCP.
-- **Zero runtime dependencies**: Ships ESM (`sentrace`), CommonJS (`sentrace`), TypeScript declarations, and an IIFE browser global bundle (`sentrace/browser` -> `window.Sentrace`).
+  - Automatic, fault-tolerant `X-Request-Id` (`request_id`) extraction from Rails `fetch` / `XMLHttpRequest` / Turbo responses so AI coding agents can correlate frontend JS crashes with backend Rails exceptions via Sentrace MCP.
+- **Zero runtime dependencies**: Ships ESM (`sentrace`), CommonJS (`sentrace`), React (`sentrace/react`), TypeScript declarations, and an IIFE browser global bundle (`sentrace/browser` -> `window.Sentrace`).
 
 ## Installation
 
@@ -36,13 +38,17 @@ Sentrace.configure do |config|
 end
 ```
 
-2. Render `sentrace_meta_tags` inside `<head>` in `app/views/layouts/application.html.erb`:
+2. Render `sentrace_meta_tags` inside `<head>` in `app/views/layouts/application.html.erb` **before** any synchronous `<script>`, `javascript_pack_tag`, `javascript_include_tag`, or `yield(:head)` tags:
 
 ```erb
 <head>
   <%= sentrace_meta_tags %>
+  <%= javascript_pack_tag "application" %>
+  <%= yield(:head) %>
 </head>
 ```
+
+> **Why `<head>` ordering matters:** Synchronous `<script>` / Webpacker `javascript_pack_tag` bundles placed in `<head>` execute before later `<meta>` tags are parsed into `document`. Placing `<%= sentrace_meta_tags %>` first guarantees zero-argument `Sentrace.init()` discovers `dsn`, `environment`, `release`, and `request_id` immediately.
 
 3. Initialize `sentrace` in `app/javascript/application.js` (auto-reads DSN, environment, release, and `request_id` from `<meta>` tags, and instruments Hotwire Turbo automatically):
 
@@ -54,6 +60,46 @@ Sentrace.init();
 
 const application = Application.start();
 Sentrace.registerStimulusErrorHandler(application);
+```
+
+## React Integration (`sentrace/react`)
+
+`sentrace/react` exports `ErrorBoundary` and `withErrorBoundary` (`react >= 16.8.0` is an optional peer dependency; non-React apps do not need `react` installed). `fallback` accepts a React function or class component (`FallbackComponent`), a React element (`<div />`), or a render function `({ error, componentStack, eventId, resetError }) => ReactNode`:
+
+```tsx
+import * as React from "react";
+import { ErrorBoundary, withErrorBoundary, FallbackProps } from "sentrace/react";
+
+function ErrorFallback({ error, eventId, resetError }: FallbackProps) {
+  return (
+    <div role="alert">
+      <p>Something went wrong (ref: {eventId}).</p>
+      <button type="button" onClick={resetError}>
+        Try again
+      </button>
+    </div>
+  );
+}
+
+export function AppRoot() {
+  return (
+    <ErrorBoundary
+      fallback={ErrorFallback}
+      onError={(error, componentStack, eventId) => {
+        // Optional side-effect hook after Sentrace capture
+      }}
+      onReset={() => {
+        // Optional state cleanup before re-rendering children
+      }}
+    >
+      <Dashboard />
+    </ErrorBoundary>
+  );
+}
+
+export const SafeCheckout = withErrorBoundary(CheckoutWidget, {
+  fallback: <div>Checkout temporarily unavailable.</div>
+});
 ```
 
 ### Importmap / Propshaft / `<script>` Tag Usage
@@ -70,9 +116,10 @@ bin/importmap pin sentrace
 import * as Sentrace from "sentrace";
 
 Sentrace.init({
-  dsn: "https://<public_key>@api.example.com/sentrace/1",
+  dsn: "https://pub_key@api.example.com/sentrace/1",
   environment: "production",
   release: "2026.11.0",
+  allowFields: ["token_present"],
   ignoreErrors: [/ResizeObserver loop/],
   beforeSend(event) {
     return event;

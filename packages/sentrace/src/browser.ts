@@ -1,10 +1,11 @@
-import { scrubUrl } from "./dsn.ts";
+import { getGlobalObject, scrubUrl } from "./dsn.ts";
 import { SENTRACE_INTERNAL_FETCH_FLAG } from "./transport.ts";
 import type { Breadcrumb, StackFrame } from "./types.ts";
 
 export interface BrowserInstrumentationHooks {
   endpointUrl: string | null;
   redactFields: string[];
+  allowFields?: string[];
   onError: (
     error: unknown,
     options: { handled: boolean; mechanismType: string; fallbackFrame?: StackFrame }
@@ -48,8 +49,8 @@ function isInternalEndpoint(url: string, endpointUrl: string | null): boolean {
 
 export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks): () => void {
   const cleanups: Array<() => void> = [];
-  const g = globalThis as Record<string, unknown>;
-  const win = (g.window ?? g) as {
+  const g = getGlobalObject();
+  const win = (g.window !== undefined && g.window !== null ? g.window : g) as {
     addEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
     removeEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
     location?: { href?: string };
@@ -65,18 +66,23 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       }
     | undefined;
 
-  if (typeof win?.addEventListener === "function" && typeof win?.removeEventListener === "function") {
+  if (win && typeof win.addEventListener === "function" && typeof win.removeEventListener === "function") {
     const errorListener = (rawEvent: unknown): void => {
-      const ev = rawEvent as {
-        error?: unknown;
-        message?: string;
-        filename?: string;
-        lineno?: number;
-        colno?: number;
-      };
-      const err = ev?.error ?? new Error(ev?.message || "Uncaught window error");
+      const ev = rawEvent as
+        | {
+            error?: unknown;
+            message?: string;
+            filename?: string;
+            lineno?: number;
+            colno?: number;
+          }
+        | undefined;
+      const err =
+        ev && ev.error !== undefined && ev.error !== null
+          ? ev.error
+          : new Error((ev && ev.message) || "Uncaught window error");
       const fallbackFrame: StackFrame | undefined =
-        ev?.filename
+        ev && ev.filename
           ? {
               filename: ev.filename,
               function: "?",
@@ -94,9 +100,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
     };
 
     const rejectionListener = (rawEvent: unknown): void => {
-      const ev = rawEvent as { reason?: unknown };
+      const ev = rawEvent as { reason?: unknown } | undefined;
       const reason = ev && "reason" in ev ? ev.reason : new Error("Unhandled Promise rejection");
-      hooks.onError(reason ?? new Error("Unhandled Promise rejection"), {
+      hooks.onError(reason !== undefined && reason !== null ? reason : new Error("Unhandled Promise rejection"), {
         handled: false,
         mechanismType: "onunhandledrejection"
       });
@@ -105,27 +111,31 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
     win.addEventListener("error", errorListener);
     win.addEventListener("unhandledrejection", rejectionListener);
     cleanups.push(() => {
-      win.removeEventListener?.("error", errorListener);
-      win.removeEventListener?.("unhandledrejection", rejectionListener);
+      if (typeof win.removeEventListener === "function") {
+        win.removeEventListener("error", errorListener);
+        win.removeEventListener("unhandledrejection", rejectionListener);
+      }
     });
 
-    let lastHref = win.location?.href;
+    let lastHref = win.location ? win.location.href : undefined;
     const popstateListener = (): void => {
-      const nextHref = win.location?.href;
+      const nextHref = win.location ? win.location.href : undefined;
       hooks.onBreadcrumb({
         type: "navigation",
         category: "navigation",
         level: "info",
         data: {
-          from: scrubUrl(lastHref, hooks.redactFields),
-          to: scrubUrl(nextHref, hooks.redactFields)
+          from: scrubUrl(lastHref, hooks.redactFields, hooks.allowFields),
+          to: scrubUrl(nextHref, hooks.redactFields, hooks.allowFields)
         }
       });
       lastHref = nextHref;
     };
     win.addEventListener("popstate", popstateListener);
     cleanups.push(() => {
-      win.removeEventListener?.("popstate", popstateListener);
+      if (typeof win.removeEventListener === "function") {
+        win.removeEventListener("popstate", popstateListener);
+      }
     });
 
     if (win.history) {
@@ -134,13 +144,14 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
         const original = historyObj[methodName];
         if (typeof original === "function") {
           historyObj[methodName] = function patchedHistory(...args: unknown[]): unknown {
-            const prev = lastHref ?? win.location?.href;
+            const currentLocHref = win.location ? win.location.href : undefined;
+            const prev = lastHref !== undefined && lastHref !== null ? lastHref : currentLocHref;
             const result = original.apply(this, args);
-            let nextUrl = win.location?.href;
+            let nextUrl = win.location ? win.location.href : undefined;
             if ((!nextUrl || nextUrl === prev) && args[2] !== undefined && args[2] !== null) {
               try {
                 nextUrl = prev ? new URL(String(args[2]), prev).toString() : String(args[2]);
-              } catch {
+              } catch (_err) {
                 nextUrl = String(args[2]);
               }
             }
@@ -150,8 +161,8 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
               category: "navigation",
               level: "info",
               data: {
-                from: scrubUrl(prev, hooks.redactFields),
-                to: scrubUrl(nextUrl, hooks.redactFields)
+                from: scrubUrl(prev, hooks.redactFields, hooks.allowFields),
+                to: scrubUrl(nextUrl, hooks.redactFields, hooks.allowFields)
               }
             });
             return result;
@@ -166,17 +177,19 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
   if (doc && typeof doc.addEventListener === "function" && typeof doc.removeEventListener === "function") {
     const clickListener = (rawEvent: unknown): void => {
-      const ev = rawEvent as { target?: unknown };
+      const ev = rawEvent as { target?: unknown } | undefined;
       hooks.onBreadcrumb({
         type: "ui",
         category: "ui.click",
         level: "info",
-        message: describeElement(ev?.target)
+        message: describeElement(ev ? ev.target : undefined)
       });
     };
     doc.addEventListener("click", clickListener, true);
     cleanups.push(() => {
-      doc.removeEventListener?.("click", clickListener, true);
+      if (typeof doc.removeEventListener === "function") {
+        doc.removeEventListener("click", clickListener, true);
+      }
     });
   }
 
@@ -187,35 +200,40 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       init?: RequestInit & { [SENTRACE_INTERNAL_FETCH_FLAG]?: boolean }
     ): Promise<Response> {
       if (init && init[SENTRACE_INTERNAL_FETCH_FLAG]) {
-        return originalFetch.call(globalThis, input, init);
+        return originalFetch.call(g, input, init);
       }
 
+      const inputObj = typeof input === "object" && input !== null ? (input as { url?: unknown; method?: unknown }) : null;
       const rawUrl =
         typeof input === "string"
           ? input
           : input instanceof URL
             ? input.toString()
-            : typeof (input as { url?: string })?.url === "string"
-              ? (input as { url: string }).url
+            : inputObj && typeof inputObj.url === "string"
+              ? inputObj.url
               : "";
 
       if (isInternalEndpoint(rawUrl, hooks.endpointUrl)) {
-        return originalFetch.call(globalThis, input, init);
+        return originalFetch.call(g, input, init);
       }
 
-      const method = (
-        init?.method ??
-        (typeof (input as { method?: string })?.method === "string" ? (input as { method: string }).method : "GET")
-      ).toUpperCase();
-      const safeUrl = scrubUrl(rawUrl, hooks.redactFields);
+      const rawMethod =
+        init && init.method !== undefined && init.method !== null
+          ? init.method
+          : inputObj && typeof inputObj.method === "string"
+            ? inputObj.method
+            : "GET";
+      const method = String(rawMethod).toUpperCase();
+      const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
 
-      return originalFetch.call(globalThis, input, init).then(
+      return originalFetch.call(g, input, init).then(
         (response) => {
-          const requestId =
-            typeof response?.headers?.get === "function"
-              ? response.headers.get("x-request-id") ?? undefined
-              : undefined;
-          const status = typeof response?.status === "number" ? response.status : undefined;
+          let requestId: string | undefined;
+          if (response && response.headers && typeof response.headers.get === "function") {
+            const rawHeader = response.headers.get("x-request-id");
+            requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+          }
+          const status = response && typeof response.status === "number" ? response.status : undefined;
 
           if (requestId && status !== undefined && status >= 400) {
             hooks.onCorrelatedRequestId(requestId);
@@ -267,7 +285,12 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       }
     | undefined;
 
-  if (XhrCtor?.prototype && typeof XhrCtor.prototype.open === "function" && typeof XhrCtor.prototype.send === "function") {
+  if (
+    XhrCtor &&
+    XhrCtor.prototype &&
+    typeof XhrCtor.prototype.open === "function" &&
+    typeof XhrCtor.prototype.send === "function"
+  ) {
     const proto = XhrCtor.prototype;
     const origOpen = proto.open!;
     const origSend = proto.send!;
@@ -291,8 +314,15 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
         const onLoadEnd = (): void => {
           const status = typeof this.status === "number" ? this.status : undefined;
           const getHeader = this.getResponseHeader as ((name: string) => string | null) | undefined;
-          const requestId =
-            typeof getHeader === "function" ? getHeader.call(this, "x-request-id") ?? undefined : undefined;
+          let requestId: string | undefined;
+          if (typeof getHeader === "function") {
+            try {
+              const rawHeader = getHeader.call(this, "x-request-id");
+              requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+            } catch (_err) {
+              requestId = undefined;
+            }
+          }
 
           if (requestId && status !== undefined && status >= 400) {
             hooks.onCorrelatedRequestId(requestId);
@@ -304,7 +334,7 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
             level: status !== undefined && status >= 400 ? "warning" : "info",
             data: {
               method: meta.method,
-              url: scrubUrl(meta.url, hooks.redactFields),
+              url: scrubUrl(meta.url, hooks.redactFields, hooks.allowFields),
               ...(status !== undefined ? { status_code: status } : {}),
               ...(requestId ? { request_id: requestId } : {})
             }
@@ -329,7 +359,7 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
     for (const fn of cleanups.splice(0)) {
       try {
         fn();
-      } catch {
+      } catch (_err) {
         // Ignore teardown errors
       }
     }

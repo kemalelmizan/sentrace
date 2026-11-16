@@ -4,6 +4,23 @@ export const VERSION = "0.1.0";
 export const SDK_NAME = "sentrace.javascript.browser";
 export const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
+export function getGlobalObject(): Record<string, unknown> {
+  if (typeof globalThis !== "undefined") {
+    return globalThis as unknown as Record<string, unknown>;
+  }
+  if (typeof window !== "undefined") {
+    return window as unknown as Record<string, unknown>;
+  }
+  if (typeof self !== "undefined") {
+    return self as unknown as Record<string, unknown>;
+  }
+  return {};
+}
+
+export function nullishCoalesce<T>(value: T | null | undefined, fallback: T): T {
+  return value !== undefined && value !== null ? value : fallback;
+}
+
 const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "password",
   "passwd",
@@ -16,14 +33,24 @@ const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "apikey",
   "authorization",
   "cookie",
-  "session",
-  "session_id",
   "credit_card",
   "card_number",
   "cvv",
   "cvc",
   "sentry_secret"
 ];
+
+const AUTH_SESSION_EXACT_KEYS = [
+  "session",
+  "session_id",
+  "_session_id",
+  "rack.session",
+  "phpsessid",
+  "jsessionid",
+  "connect.sid"
+];
+
+const AUTH_SESSION_KEY_REGEX = /^_(?:[a-z0-9_]+_)?session$|(?:^|[_.-])session[_.-]?token$/;
 
 export function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null {
   if (!rawDsn || typeof rawDsn !== "string") {
@@ -38,7 +65,7 @@ export function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null {
   let uri: URL;
   try {
     uri = new URL(trimmed);
-  } catch {
+  } catch (_err) {
     return null;
   }
 
@@ -76,7 +103,11 @@ export function buildEnvelopeEndpoint(dsn: ParsedDsn): string {
   return `${dsn.protocol}://${authority}${dsn.pathPrefix}/api/${dsn.projectId}/envelope?${query}`;
 }
 
-export function scrubUrl(rawUrl: string | undefined, extraRedactFields: string[] = []): string | undefined {
+export function scrubUrl(
+  rawUrl: string | undefined,
+  extraRedactFields: string[] = [],
+  allowFields: string[] = []
+): string | undefined {
   if (!rawUrl || typeof rawUrl !== "string") {
     return undefined;
   }
@@ -90,9 +121,18 @@ export function scrubUrl(rawUrl: string | undefined, extraRedactFields: string[]
     ...DEFAULT_SENSITIVE_QUERY_KEYS,
     ...extraRedactFields.map((f) => String(f).toLowerCase())
   ];
+  const allowSet = new Set(
+    allowFields.map((f) => String(f).trim().toLowerCase()).filter(Boolean)
+  );
 
   const isSensitive = (key: string): boolean => {
-    const lower = key.toLowerCase();
+    const lower = key.trim().toLowerCase();
+    if (allowSet.has(lower)) {
+      return false;
+    }
+    if (AUTH_SESSION_EXACT_KEYS.indexOf(lower) !== -1 || AUTH_SESSION_KEY_REGEX.test(lower)) {
+      return true;
+    }
     return redactPatterns.some((term) => lower.includes(term));
   };
 
@@ -118,7 +158,8 @@ export function scrubUrl(rawUrl: string | undefined, extraRedactFields: string[]
       return `${parsed.pathname}${parsed.search}${parsed.hash}`;
     }
     return parsed.toString();
-  } catch {
-    return trimmed.split("?")[0]?.replace(/\/\/[^/@]+@/, "//") ?? trimmed;
+  } catch (_err) {
+    const withoutQuery = trimmed.split("?")[0];
+    return withoutQuery ? withoutQuery.replace(/\/\/[^/@]+@/, "//") : trimmed;
   }
 }
