@@ -10,7 +10,7 @@
 
 ## 3. Remote HTTP Client, Concurrent EnvironmentRouter & Federation Specs
 
-- [ ] 3.1 Implement `Sentrace::Mcp::RemoteHttpClient` (`lib/sentrace/mcp/remote_http_client.rb`) and `Sentrace::Mcp::EnvironmentRouter` (`lib/sentrace/mcp/environment_router.rb`) wired into `Sentrace::Mcp::Dispatcher` for concurrent cross-environment queries, merged results with fingerprint correlations, per-environment timeouts, and partial-failure error categories without credential leakage, and verify multi-environment federation, timeout, and partial-failure integration specs pass
+- [x] 3.1 Implement `Sentrace::Mcp::RemoteHttpClient` (`lib/sentrace/mcp/remote_http_client.rb`) and `Sentrace::Mcp::EnvironmentRouter` (`lib/sentrace/mcp/environment_router.rb`) wired into `Sentrace::Mcp::Dispatcher` for concurrent cross-environment queries, merged results with fingerprint correlations, per-environment timeouts, and partial-failure error categories without credential leakage, and verify multi-environment federation, timeout, and partial-failure integration specs pass
 
 ## Workflow follow-up
 

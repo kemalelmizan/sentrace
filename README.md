@@ -35,17 +35,49 @@ end
 ## Project & Credential Management
 
 ```bash
+# Ingestion DSN keys (for sentry-ruby SDKs)
 bin/rails sentrace:projects
 bin/rails "sentrace:projects:create[my-app]"
 bin/rails "sentrace:projects:rotate_key[my-app]"
+
+# Dedicated MCP bearer tokens (stored as SHA-256 digests, separate from DSNs)
+bin/rails sentrace:mcp:tokens
+bin/rails "sentrace:mcp:tokens:create[staging]"
+bin/rails "sentrace:mcp:tokens:rotate[staging]"
+bin/rails "sentrace:mcp:tokens:revoke[1]"
 ```
 
-## Local MCP Server (`stdio`)
+## Local MCP Server (`stdio`) & Environment Federation
 
 Run the standalone Sentrace MCP server over `stdio` (no running Rails web server required):
 
 ```bash
 bin/rails sentrace:mcp
+```
+
+Each remote Rails deployment (`staging`, `production`) exposes an authenticated Streamable HTTP MCP endpoint at `POST /sentrace/mcp` (requiring HTTPS on non-loopback hosts and `Authorization: Bearer <snt_mcp_token>`). Configure your local initializer (`config/initializers/sentrace.rb`) to federate across environments concurrently:
+
+```ruby
+Sentrace.configure do |config|
+  config.deployment_environment = ENV.fetch("SENTRACE_DEPLOYMENT_ENV", Rails.env)
+  config.remote_timeout = 5.0
+
+  config.environments = {
+    local: { transport: :local },
+    staging: {
+      transport: :http,
+      url: "https://staging.example.com/sentrace/mcp",
+      token: ENV["SENTRACE_STAGING_MCP_TOKEN"],
+      timeout: 3.0
+    },
+    production: {
+      transport: :http,
+      url: "https://errors.example.com/sentrace/mcp",
+      token: ENV["SENTRACE_PROD_MCP_TOKEN"],
+      timeout: 5.0
+    }
+  }
+end
 ```
 
 Example MCP client configuration (`.mcp.json` / Claude Code / Cursor / Antigravity):

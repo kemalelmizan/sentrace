@@ -1,6 +1,15 @@
 require "rails_helper"
 
 RSpec.describe Sentrace::Mcp::Dispatcher do
+  self.use_transactional_tests = false
+
+  after do
+    Sentrace::Event.delete_all
+    Sentrace::Issue.delete_all
+    Sentrace::ProjectKey.delete_all
+    Sentrace::Project.delete_all
+    Sentrace::McpToken.delete_all
+  end
   let(:config) do
     Sentrace::Configuration.new.tap do |c|
       c.environments = {
@@ -14,7 +23,12 @@ RSpec.describe Sentrace::Mcp::Dispatcher do
     end
   end
 
-  subject(:dispatcher) { described_class.new(config: config) }
+  let(:unreachable_requester) do
+    ->(**_args) { raise SocketError, "getaddrinfo: nodename nor servname provided" }
+  end
+  let(:remote_client) { Sentrace::Mcp::RemoteHttpClient.new(http_requester: unreachable_requester) }
+
+  subject(:dispatcher) { described_class.new(config: config, remote_client: remote_client) }
 
   describe "#list_environments" do
     it "lists configured environments with connection status and never exposes tokens" do
@@ -28,7 +42,7 @@ RSpec.describe Sentrace::Mcp::Dispatcher do
           "name" => "staging",
           "transport" => "http",
           "url" => "https://staging.example.com/sentrace/mcp",
-          "status" => "configured"
+          "status" => "unreachable"
         )
       )
     end
@@ -53,10 +67,23 @@ RSpec.describe Sentrace::Mcp::Dispatcher do
 
     it "isolates unavailable remote environments during 'all' queries without hiding local results" do
       federated = dispatcher.dispatch(:list_projects, environment: "all")
+      serialized = JSON.generate(federated)
 
+      expect(serialized).not_to include("super-secret-staging-token")
       expect(federated["environments_queried"]).to eq(%w[local staging])
-      expect(federated["results"].size).to eq(1)
-      expect(federated["results"].first["environment"]).to eq("local")
+      expect(federated["projects"].size).to eq(1)
+      expect(federated["projects"].first["environment"]).to eq("local")
+      expect(federated["projects"].first["slug"]).to eq("web-app")
+      expect(federated["errors"]).to contain_exactly(
+        hash_including("environment" => "staging", "category" => "unreachable")
+      )
+    end
+
+    it "reports transport_unavailable when remote_client is explicitly disabled" do
+      disabled_dispatcher = described_class.new(config: config, remote_client: nil)
+      federated = disabled_dispatcher.dispatch(:list_projects, environment: "all")
+
+      expect(federated["projects"].size).to eq(1)
       expect(federated["errors"]).to contain_exactly(
         hash_including("environment" => "staging", "category" => "transport_unavailable")
       )
