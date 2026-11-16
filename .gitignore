@@ -17,3 +17,5 @@
 spec/examples.txt
 .DS_Store
 *.gem
+node_modules/
+*.tgz

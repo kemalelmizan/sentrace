@@ -1,0 +1,51 @@
+{
+  "name": "sentrace",
+  "version": "0.0.1",
+  "description": "Frontend browser error capturing SDK for Sentrace — self-hosted Sentry-compatible error tracking for Ruby on Rails with federated MCP.",
+  "license": "MIT",
+  "author": "Kemal Elmizan <kemalelmizan@gmail.com>",
+  "homepage": "https://github.com/kemalelmizan/sentrace#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kemalelmizan/sentrace.git",
+    "directory": "packages/sentrace"
+  },
+  "bugs": {
+    "url": "https://github.com/kemalelmizan/sentrace/issues"
+  },
+  "keywords": [
+    "sentrace",
+    "error-tracking",
+    "rails",
+    "sentry",
+    "mcp",
+    "browser",
+    "observability"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE.txt",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/index.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
