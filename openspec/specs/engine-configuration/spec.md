@@ -52,12 +52,12 @@ The configuration SHALL accept logical environment definitions mapping environme
 - **THEN** configuration validation rejects the insecure URL
 
 ### Requirement: Host installation generator
-Running `bin/rails generate sentrace:install` in a host application SHALL create `config/initializers/sentrace.rb`, mount the engine in `config/routes.rb` idempotently, copy engine migrations into the host `db/migrate/` directory, install a project bootstrap task, and output a `Sentry.init` DSN configuration example.
+Running `bin/rails generate sentrace:install` in a host application SHALL create `config/initializers/sentrace.rb`, mount the engine in `config/routes.rb` idempotently, copy engine migrations into the host `db/migrate/` directory, install a project bootstrap task, and output both backend `Sentry.init` and frontend `sentrace` setup instructions.
 
 #### Scenario: Fresh installation in a host Rails application
 - **GIVEN** a host Rails application without existing Sentrace setup
 - **WHEN** the developer runs `bin/rails generate sentrace:install`
-- **THEN** the initializer is created, the engine route mount is added, engine migrations are copied, and SDK setup instructions are printed
+- **THEN** the initializer is created, the engine route mount is added, engine migrations are copied, and backend plus frontend SDK setup instructions are printed
 
 #### Scenario: Re-running the install generator is idempotent
 - **GIVEN** a host Rails application where `sentrace:install` has already been run
@@ -78,3 +78,10 @@ Running `bin/rails generate sentrace:install` in a host application SHALL create
 #### Scenario: Validating retention_batch_size and internal_authenticator
 - **WHEN** a host application configures `retention_batch_size = 500` and a callable `internal_authenticator = ->(request) { ... }`
 - **THEN** `Sentrace.configure` accepts both settings and raises `Sentrace::ConfigurationError` if `retention_batch_size <= 0` or `internal_authenticator` does not respond to `#call`
+
+### Requirement: Frontend DSN, release, and CORS allowed origins configuration
+`Sentrace::Configuration` SHALL provide `frontend_dsn` (defaulting to `nil`), `release` (defaulting to `ENV["APP_RELEASE"]`), and `cors_allowed_origins` (defaulting to `[]`, accepting an Array of origin strings or `"*"`) for browser error ingestion and Rails layout helpers.
+
+#### Scenario: Configuring cors_allowed_origins and frontend_dsn
+- **WHEN** a host application configures `cors_allowed_origins = ["https://app.example.com"]`, `frontend_dsn = "https://pub@api.example.com/sentrace/1"`, and `release = "2026.11.16"`
+- **THEN** `Sentrace.configure` validates the origin list and exposes the settings while rejecting non-String/non-Array `cors_allowed_origins` with `Sentrace::ConfigurationError`

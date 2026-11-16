@@ -21,7 +21,7 @@ The MCP server SHALL expose `list_environments` and `list_projects` tools return
 - **THEN** `list_environments` returns environment names, transport types, and connectivity status without `"secret-tok"`, and `list_projects` returns `shop-api` attributed to `"local"`
 
 ### Requirement: Bounded and paginated issue and event investigation tools
-The MCP server SHALL expose `list_issues`, `get_issue`, `list_events`, and `get_event` supporting `environment` and `project_id` scoping, filtering (`status`, `level`, `release`, `issue_id`, `since`, `until`), bounded `limit` caps, and opaque cursor pagination.
+The MCP server SHALL expose `list_issues`, `get_issue`, `list_events`, and `get_event` supporting `environment` and `project_id` scoping, filtering (`status`, `level`, `release`, `platform`, `request_id`, `issue_id`, `since`, `until`), bounded `limit` caps, `request_id` summary attribution, and opaque cursor pagination.
 
 #### Scenario: Filtering and cursor-paginating issues and inspecting issue details
 - **GIVEN** three issues in project `1` across different statuses, levels, and releases
@@ -32,6 +32,11 @@ The MCP server SHALL expose `list_issues`, `get_issue`, `list_events`, and `get_
 - **GIVEN** a stored event in project `1` with stack frames, breadcrumbs, tags, and sanitized contexts
 - **WHEN** a client calls `get_event` with `project_id: 1` and the event's `event_id`
 - **THEN** `get_event` returns normalized relational attributes alongside `exception`, `breadcrumbs`, `tags`, `contexts`, `request`, and hashed `user`
+
+#### Scenario: Correlating frontend JavaScript and backend Ruby events by request_id and platform
+- **GIVEN** project `1` contains a Ruby backend event and a JavaScript frontend event sharing `tags["request_id"] == "req-shared-77"`, plus unrelated events
+- **WHEN** a client calls `list_events` with `project_id: 1, request_id: "req-shared-77"` and `list_issues` with `platform: "javascript"`
+- **THEN** `list_events` returns both the Ruby and JavaScript events carrying `"request_id" => "req-shared-77"`, and `list_issues` returns only issues seen on `"javascript"`
 
 ### Requirement: Query-time error trend aggregation without metric tables
 The MCP server SHALL expose `get_error_trends` accepting `environment`, `project_id`, `since`, `until`, and `interval` (`minute`, `hour`, or `day`), computing bucketed occurrence counts directly from `sentrace_events` without creating auxiliary metric tables.
