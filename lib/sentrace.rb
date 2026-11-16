@@ -3,6 +3,9 @@ require "sentrace/errors"
 require "sentrace/configuration"
 require "sentrace/dsn"
 require "sentrace/project_manager"
+require "sentrace/ingestion/envelope_parser"
+require "sentrace/ingestion/event_normalizer"
+require "sentrace/ingestion/sanitizer"
 require "sentrace/engine"
 
 module Sentrace
