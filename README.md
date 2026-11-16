@@ -9,9 +9,9 @@ See [SPEC.md](SPEC.md) for the complete product specification and architecture.
 ## Architecture
 
 ```text
-Rails application (sentry-ruby)
+Rails application (sentry-ruby) + Browser / Hotwire / SPA (sentrace npm / @sentry/browser)
         |
-        | POST /sentrace/api/:project_id/envelope (raw or gzip)
+        | POST /sentrace/api/:project_id/envelope (raw or gzip, CORS preflight supported)
         v
 Sentrace::Ingestion::Processor
   -> EnvelopeParser -> EventNormalizer -> Sanitizer -> Issues::Fingerprint -> Issues::Grouper
@@ -53,6 +53,26 @@ Sentry.init do |config|
 end
 ```
 
+### Frontend Browser & Hotwire Integration (`sentrace` npm)
+
+Install the zero-dependency [`sentrace` npm package](packages/sentrace/README.md) (`@sentry/browser`-compatible API + native Rails `<meta>`, Hotwire Turbo, Stimulus, and `X-Request-Id` correlation):
+
+```bash
+npm install sentrace
+```
+
+Render `<%= sentrace_meta_tags %>` in `app/views/layouts/application.html.erb` (with `config.frontend_dsn` set in `config/initializers/sentrace.rb`), then initialize in `app/javascript/application.js`:
+
+```js
+import * as Sentrace from "sentrace";
+import { Application } from "@hotwired/stimulus";
+
+Sentrace.init(); // Auto-discovers DSN, environment, release, and request_id from meta tags
+
+const application = Application.start();
+Sentrace.registerStimulusErrorHandler(application);
+```
+
 ## Configuration Reference
 
 Configure Sentrace in `config/initializers/sentrace.rb`:
@@ -61,6 +81,9 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 |---|---|---|
 | `enabled` | `true` | Enable or disable Sentrace envelope ingestion (`202 Accepted` no-op when `false`). |
 | `deployment_environment` | `Rails.env` | Environment attribution label stamped on remote `/sentrace/mcp` responses. |
+| `frontend_dsn` | `nil` | Public DSN rendered by `sentrace_meta_tags` (strips any accidental secret key). |
+| `release` | `ENV["APP_RELEASE"]` | Release label rendered by `sentrace_meta_tags`. |
+| `cors_allowed_origins` | `[]` | Allowed browser `Origin`s (`Array` of origins or `"*"`) for `/api/:project_id/envelope`. |
 | `retention_period` | `30.days` | How long normalized `sentrace_events` rows are retained before batch pruning. |
 | `orphan_issue_retention_period` | `7.days` | Grace period before deleting `sentrace_issues` with zero remaining events. |
 | `retention_batch_size` | `1000` | Maximum rows deleted per SQL statement during retention cleanup. |

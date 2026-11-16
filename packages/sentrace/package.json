@@ -1,7 +1,7 @@
 {
   "name": "sentrace",
-  "version": "0.0.1",
-  "description": "Frontend browser error capturing SDK for Sentrace — self-hosted Sentry-compatible error tracking for Ruby on Rails with federated MCP.",
+  "version": "0.1.0",
+  "description": "Zero-dependency @sentry/browser-compatible frontend error capturing SDK for Sentrace — cohesively integrated with Ruby on Rails, Hotwire, and federated MCP.",
   "license": "MIT",
   "author": "Kemal Elmizan <kemalelmizan@gmail.com>",
   "homepage": "https://github.com/kemalelmizan/sentrace#readme",
@@ -17,7 +17,11 @@
     "sentrace",
     "error-tracking",
     "rails",
+    "hotwire",
+    "turbo",
+    "stimulus",
     "sentry",
+    "sentry-browser",
     "mcp",
     "browser",
     "observability"
@@ -25,13 +29,16 @@
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
+  "unpkg": "./dist/sentrace.browser.js",
+  "jsdelivr": "./dist/sentrace.browser.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./browser": "./dist/sentrace.browser.js"
   },
   "files": [
     "dist",
@@ -43,7 +50,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/index.test.mjs"
+    "build": "node scripts/build.mjs",
+    "prepublishOnly": "node scripts/build.mjs && npm test",
+    "test": "node --test test/*.test.mjs"
   },
   "publishConfig": {
     "access": "public"

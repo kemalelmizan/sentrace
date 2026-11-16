@@ -1,0 +1,212 @@
+export type SeverityLevel = "fatal" | "error" | "warning" | "log" | "info" | "debug";
+
+export interface StackFrame {
+  filename?: string;
+  abs_path?: string;
+  function?: string;
+  lineno?: number;
+  colno?: number;
+  in_app?: boolean;
+}
+
+export interface SentryExceptionValue {
+  type: string;
+  value: string;
+  stacktrace?: {
+    frames: StackFrame[];
+  };
+  mechanism?: {
+    type: string;
+    handled?: boolean;
+  };
+}
+
+export interface Breadcrumb {
+  type?: string;
+  category?: string;
+  message?: string;
+  data?: Record<string, unknown>;
+  level?: SeverityLevel;
+  timestamp?: string | number;
+}
+
+export interface User {
+  id?: string | number;
+  username?: string;
+  email?: string;
+  [key: string]: unknown;
+}
+
+export interface SentryRequestInfo {
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+}
+
+export interface SentryEvent {
+  event_id: string;
+  timestamp: string;
+  platform: "javascript";
+  level?: SeverityLevel;
+  logger?: string;
+  environment?: string;
+  release?: string;
+  culprit?: string;
+  transaction?: string;
+  message?: string;
+  fingerprint?: string[];
+  exception?: {
+    values: SentryExceptionValue[];
+  };
+  breadcrumbs?: {
+    values: Breadcrumb[];
+  };
+  tags?: Record<string, string>;
+  extra?: Record<string, unknown>;
+  contexts?: Record<string, Record<string, unknown>>;
+  user?: User | null;
+  request?: SentryRequestInfo;
+  sdk?: {
+    name: string;
+    version: string;
+  };
+}
+
+export interface SentryEventHint {
+  originalException?: unknown;
+  syntheticException?: Error;
+  event_id?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface ScopeContext {
+  level?: SeverityLevel;
+  tags?: Record<string, string | number | boolean>;
+  extra?: Record<string, unknown>;
+  contexts?: Record<string, Record<string, unknown>>;
+  user?: User | null;
+  fingerprint?: string[];
+}
+
+export type CaptureContext = ScopeContext | ((scope: ScopeLike) => ScopeLike | void);
+
+export interface ScopeLike {
+  setTag(key: string, value: string | number | boolean): this;
+  setTags(tags: Record<string, string | number | boolean>): this;
+  setUser(user: User | null): this;
+  setContext(name: string, context: Record<string, unknown> | null): this;
+  setExtra(key: string, extra: unknown): this;
+  setExtras(extras: Record<string, unknown>): this;
+  setLevel(level: SeverityLevel): this;
+  setFingerprint(fingerprint: string[]): this;
+  addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this;
+  clearBreadcrumbs(): this;
+  clear(): this;
+}
+
+export interface ParsedDsn {
+  protocol: "http" | "https";
+  publicKey: string;
+  host: string;
+  port?: string;
+  pathPrefix: string;
+  projectId: string;
+}
+
+export interface TransportMakeRequestResponse {
+  statusCode?: number;
+}
+
+export interface Transport {
+  send(envelope: string): Promise<TransportMakeRequestResponse>;
+  sendOnExit?(envelope: string): boolean;
+  flush(timeout?: number): Promise<boolean>;
+}
+
+export interface RailsMetaConfig {
+  dsn?: string;
+  environment?: string;
+  release?: string;
+  requestId?: string;
+}
+
+export interface StimulusErrorDetail {
+  identifier?: string;
+  controller?: unknown;
+  element?: Element;
+  action?: string;
+}
+
+export interface StimulusApplicationLike {
+  handleError?: (error: Error, message: string, detail?: Record<string, unknown>) => void;
+}
+
+export interface SentraceOptions {
+  /**
+   * Sentrace or Sentry v7 DSN (`https://<public_key>@<host>/sentrace/<project_id>`).
+   * When omitted in a browser document with `sentrace_meta_tags`, auto-discovered from `<meta name="sentrace-dsn">`.
+   */
+  dsn?: string | null;
+  /**
+   * Enable or disable event transmission (`true` by default).
+   */
+  enabled?: boolean;
+  /**
+   * Logical deployment environment (`"production"`, `"staging"`, `"development"`).
+   */
+  environment?: string;
+  /**
+   * Application release identifier (e.g. git SHA or semantic version).
+   */
+  release?: string | null;
+  /**
+   * Sampling rate between `0.0` and `1.0` (`1.0` captures 100% of error events).
+   */
+  sampleRate?: number;
+  /**
+   * Maximum breadcrumbs retained in the ring buffer (`20` by default).
+   */
+  maxBreadcrumbs?: number;
+  /**
+   * Maximum stack frames retained per exception (`50` by default).
+   */
+  maxStackFrames?: number;
+  /**
+   * Error message substrings or RegExp patterns to ignore.
+   */
+  ignoreErrors?: Array<string | RegExp>;
+  /**
+   * Script URL substrings or RegExp patterns to ignore when matched on the top frame.
+   */
+  denyUrls?: Array<string | RegExp>;
+  /**
+   * Script URL allowlist; when non-empty, at least one frame must match.
+   */
+  allowUrls?: Array<string | RegExp>;
+  /**
+   * Additional query-string field names to redact from URLs before sending.
+   */
+  redactFields?: string[];
+  /**
+   * Automatically attach browser global error, unhandledrejection, click, navigation, and fetch/XHR hooks (`true` by default).
+   */
+  autoInstrumentBrowser?: boolean;
+  /**
+   * Automatically read Rails `<meta name="sentrace-*">` tags and attach Hotwire Turbo hooks (`true` by default).
+   */
+  railsIntegration?: boolean;
+  /**
+   * Mutate an event before transmission or return `null` to drop it.
+   */
+  beforeSend?: (event: SentryEvent, hint: SentryEventHint) => SentryEvent | null;
+  /**
+   * Mutate a breadcrumb before recording or return `null` to drop it.
+   */
+  beforeBreadcrumb?: (breadcrumb: Breadcrumb) => Breadcrumb | null;
+  /**
+   * Custom transport factory override (useful for testing or offline queues).
+   */
+  transport?: (dsn: ParsedDsn, endpointUrl: string) => Transport;
+}
+
+export type BrowserOptions = SentraceOptions;

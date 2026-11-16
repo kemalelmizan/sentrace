@@ -14,9 +14,9 @@
 
 ## 3. Zero-Dependency `@sentry/browser`-Compatible TypeScript SDK (`packages/sentrace`)
 
-- [ ] 3.1 Implement TypeScript core modules (`types.ts`, `dsn.ts`, `stacktrace.ts`, `scope.ts`, `envelope.ts`, `transport.ts`) covering DSN parsing, V8/Firefox/Safari stack parsing, `Scope`/`withScope`, Sentry v7 envelope serialization, `fetch`/`sendBeacon` transport, and URL query-parameter scrubbing, verified with `node --test packages/sentrace/test/*.test.mjs`
-- [ ] 3.2 Implement browser global instrumentation (`browser.ts`), Rails `<meta>` auto-discovery + Hotwire Turbo / Stimulus hooks + `X-Request-Id` extraction (`rails.ts`), and top-level `@sentry/browser`-compatible client API (`client.ts`, `index.ts`), verified with `node --test packages/sentrace/test/*.test.mjs`
-- [ ] 3.3 Build `0.1.0` ESM (`dist/index.mjs`), CommonJS (`dist/index.cjs`), TypeScript declarations (`dist/index.d.ts`), and browser IIFE (`dist/sentrace.browser.js`) bundles via `scripts/build.mjs`, sync `app/assets/javascripts/sentrace*.js`, and update `packages/sentrace/README.md` and root `README.md`, verified with `npm --prefix packages/sentrace run build && npm --prefix packages/sentrace test && npm pack --dry-run ./packages/sentrace`
+- [x] 3.1 Implement TypeScript core modules (`types.ts`, `dsn.ts`, `stacktrace.ts`, `scope.ts`, `envelope.ts`, `transport.ts`) covering DSN parsing, V8/Firefox/Safari stack parsing, `Scope`/`withScope`, Sentry v7 envelope serialization, `fetch`/`sendBeacon` transport, and URL query-parameter scrubbing, verified with `node --test packages/sentrace/test/*.test.mjs`
+- [x] 3.2 Implement browser global instrumentation (`browser.ts`), Rails `<meta>` auto-discovery + Hotwire Turbo / Stimulus hooks + `X-Request-Id` extraction (`rails.ts`), and top-level `@sentry/browser`-compatible client API (`client.ts`, `index.ts`), verified with `node --test packages/sentrace/test/*.test.mjs`
+- [x] 3.3 Build `0.1.0` ESM (`dist/index.mjs`), CommonJS (`dist/index.cjs`), TypeScript declarations (`dist/index.d.ts`), and browser IIFE (`dist/sentrace.browser.js`) bundles via `scripts/build.mjs`, sync `app/assets/javascripts/sentrace*.js`, and update `packages/sentrace/README.md` and root `README.md`, verified with `npm --prefix packages/sentrace run build && npm --prefix packages/sentrace test && npm pack --dry-run ./packages/sentrace`
 
 ## 4. End-to-End Browser + Rails + MCP Integration Verification
 
