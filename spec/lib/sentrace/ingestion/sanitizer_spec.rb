@@ -174,5 +174,126 @@ RSpec.describe Sentrace::Ingestion::Sanitizer do
       expect(sanitized.event_data.dig("tags", "scrubbed_by")).to eq("host")
       expect(sanitized.event_data["message"].bytesize).to eq(16)
     end
+
+    it "redacts auth session keys while preserving non-auth *_session_id domain foreign keys and honoring allow_fields" do
+      config.allow_fields = %w[token_present token_expires_in]
+
+      normalized = build_normalized(
+        "request" => {
+          "url" => "https://app.example.com/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=sess_1&_myapp_session=cookie_2&TOKEN_EXPIRES_IN=3600&access_token=tok_secret",
+          "method" => "GET"
+        },
+        "tags" => {
+          "calibration_session_id" => "42",
+          "token_present" => "true",
+          "refresh_token" => "ref_secret",
+          "user_session_token" => "sess_tok_3"
+        },
+        "breadcrumbs" => [
+          {
+            "category" => "auth",
+            "data" => {
+              "token_expires_in" => 3600,
+              "calibration_session_id" => 42,
+              "_session_id" => "sess_4",
+              "api_key" => "ak_live_999"
+            }
+          }
+        ],
+        "contexts" => {
+          "calibration" => {
+            "promotion_calibration_session_id" => 99,
+            "token_present" => "Bearer leaked_jwt_value",
+            "rack.session" => "rack_secret"
+          }
+        }
+      )
+
+      sanitized = described_class.sanitize(normalized, project_id: 1, config: config, secret_base: secret_base)
+      data = sanitized.event_data
+      url = data.dig("request", "url")
+
+      expect(url).to include("calibration_session_id=42")
+      expect(url).to include("promotion_calibration_session_id=99")
+      expect(url).to include("TOKEN_EXPIRES_IN=3600")
+      expect(url).to include("session_id=%5BREDACTED%5D")
+      expect(url).to include("_myapp_session=%5BREDACTED%5D")
+      expect(url).to include("access_token=%5BREDACTED%5D")
+
+      expect(data["tags"]).to eq(
+        "calibration_session_id" => "42",
+        "token_present" => "true",
+        "refresh_token" => "[REDACTED]",
+        "user_session_token" => "[REDACTED]"
+      )
+      expect(data["breadcrumbs"].first["data"]).to eq(
+        "token_expires_in" => 3600,
+        "calibration_session_id" => 42,
+        "_session_id" => "[REDACTED]",
+        "api_key" => "[REDACTED]"
+      )
+      expect(data.dig("contexts", "calibration")).to eq(
+        "promotion_calibration_session_id" => 99,
+        "token_present" => "Bearer [REDACTED]",
+        "rack.session" => "[REDACTED]"
+      )
+    end
+
+    it "computes id_hash from user_id and userId and supports bounded opt-in retain_user_fields" do
+      from_id = described_class.sanitize(
+        build_normalized("user" => { "id" => "108" }),
+        project_id: 1,
+        config: config,
+        secret_base: secret_base
+      )
+      from_user_id = described_class.sanitize(
+        build_normalized("user" => { "user_id" => 108 }),
+        project_id: 1,
+        config: config,
+        secret_base: secret_base
+      )
+      from_camel_id = described_class.sanitize(
+        build_normalized("user" => { "userId" => "108" }),
+        project_id: 1,
+        config: config,
+        secret_base: secret_base
+      )
+
+      expected_hash = from_id.event_data.dig("user", "id_hash")
+      expect(from_user_id.event_data["user"]).to eq("id_hash" => expected_hash)
+      expect(from_camel_id.event_data["user"]).to eq("id_hash" => expected_hash)
+
+      config.retain_user_fields = %w[id email username name spoofed_user_id api_token password ip_address roles]
+      retained = described_class.sanitize(
+        build_normalized(
+          "user" => {
+            "id" => 108,
+            "email" => "alice@internal.corp",
+            "username" => "alice",
+            "name" => "A" * 400,
+            "spoofed_user_id" => "admin:Bearer super_secret_jwt",
+            "api_token" => "tok_123",
+            "password" => "hunter2",
+            "ip_address" => "10.0.0.5",
+            "roles" => [ "staff" ]
+          }
+        ),
+        project_id: 1,
+        config: config,
+        secret_base: secret_base
+      )
+
+      user_payload = retained.event_data["user"]
+      expect(user_payload["id_hash"]).to eq(expected_hash)
+      expect(user_payload["id"]).to eq(108)
+      expect(user_payload["email"]).to eq("alice@internal.corp")
+      expect(user_payload["username"]).to eq("alice")
+      expect(user_payload["name"].bytesize).to eq(256)
+      expect(user_payload["spoofed_user_id"]).to eq("admin:Bearer [REDACTED]")
+      expect(user_payload).not_to have_key("api_token")
+      expect(user_payload).not_to have_key("password")
+      expect(user_payload).not_to have_key("ip_address")
+      expect(user_payload).not_to have_key("roles")
+    end
   end
 end

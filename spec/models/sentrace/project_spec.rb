@@ -56,4 +56,41 @@ RSpec.describe Sentrace::Project, type: :model do
       ).to eq(new_key)
     end
   end
+
+  describe ".ensure!" do
+    it "idempotently ensures a project and pinned public_key across repeated boots without rotating or duplicating" do
+      pinned_key = "pub_prod_0123456789abcdef"
+
+      project1, key1 = described_class.ensure!(slug: "core-monolith", public_key: pinned_key)
+      project2, key2 = described_class.ensure!(slug: "core-monolith", public_key: pinned_key)
+
+      expect(project1).to eq(project2)
+      expect(key1).to eq(key2)
+      expect(key1.public_key).to eq(pinned_key)
+      expect(project1.project_keys.count).to eq(1)
+      expect(project1.active_key).to eq(key1)
+
+      auto_project, auto_key = described_class.ensure!(slug: "worker-app")
+      _, auto_key_repeat = described_class.ensure!(slug: "worker-app")
+      expect(auto_key_repeat).to eq(auto_key)
+      expect(auto_project.project_keys.count).to eq(1)
+    end
+
+    it "rejects malformed, cross-project, or revoked public_key values in .ensure!" do
+      _other_project, other_key = described_class.ensure!(slug: "alpha-app", public_key: "alpha_pub_0123456789abcdef")
+
+      expect {
+        described_class.ensure!(slug: "beta-app", public_key: "short")
+      }.to raise_error(ArgumentError, /public_key must be 16..64/)
+
+      expect {
+        described_class.ensure!(slug: "beta-app", public_key: other_key.public_key)
+      }.to raise_error(ArgumentError, /already assigned to another project/)
+
+      other_key.revoke!
+      expect {
+        described_class.ensure!(slug: "alpha-app", public_key: other_key.public_key)
+      }.to raise_error(ArgumentError, /revoked key/)
+    end
+  end
 end

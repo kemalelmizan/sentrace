@@ -1,21 +1,8 @@
 namespace :sentrace do
-  desc "Bootstrap the default Sentrace project and output local DSN credentials"
+  desc "Bootstrap the default Sentrace project and optional MCP credentials idempotently"
   task setup: :environment do
-    slug = ENV.fetch("SENTRACE_PROJECT_SLUG", "<%= default_project_slug %>")
-    base_url = ENV.fetch("SENTRACE_BASE_URL", "http://localhost:3000/sentrace")
-
-    project = Sentrace::Project.find_by(slug: slug)
-    if project
-      key = project.active_key || project.rotate_key!
-    else
-      project, key = Sentrace::Project.provision!(
-        slug: slug,
-        name: slug.tr("-", " ").titleize
-      )
-    end
-
-    dsn = Sentrace::Dsn.build(base_url: base_url, public_key: key.public_key, project_id: project.id)
-    puts "Sentrace project '#{project.slug}' (id=#{project.id}) ready."
-    puts "SENTRY_DSN=#{dsn}"
+    Sentrace::Bootstrapper.new.run(default_project_slug: "<%= default_project_slug %>")
+  rescue ArgumentError, ActiveRecord::RecordInvalid => e
+    abort e.message
   end
 end

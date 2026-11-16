@@ -161,6 +161,32 @@ RSpec.describe Sentrace::Issues::Fingerprint do
       expect(fp_a).not_to eq(fp_different)
     end
 
+    it "normalizes floating-point numbers and numeric+unit tokens (s, ms, %, MB) into a single message fingerprint" do
+      fp_lark_seconds = fingerprint_for(
+        "message" => "Slow Lark API response: 3.45s for user 812 (payload 10MB, error rate 12.5%)"
+      )
+      fp_lark_millis = fingerprint_for(
+        "message" => "Slow Lark API response: 250ms for user 19402 (payload 2.4MB, error rate 0.8%)"
+      )
+      fp_lark_integer_sec = fingerprint_for(
+        "message" => "Slow Lark API response: 4s for user 7 (payload 512KB, error rate 99%)"
+      )
+      fp_other_api = fingerprint_for(
+        "message" => "Slow Slack API response: 3.45s for user 812 (payload 10MB, error rate 12.5%)"
+      )
+
+      expect(fp_lark_seconds).to eq(fp_lark_millis)
+      expect(fp_lark_seconds).to eq(fp_lark_integer_sec)
+      expect(fp_lark_seconds).not_to eq(fp_other_api)
+
+      expect(described_class.normalize_message("S3 upload took 1.25s for oauth2 client 42")).to eq(
+        "S3 upload took <num> for oauth2 client <num>"
+      )
+      expect(described_class.normalize_message("Score drift -0.375 vs threshold 1.50.")).to eq(
+        "Score drift <num> vs threshold <num>."
+      )
+    end
+
     it "normalizes browser URLs, strips JS/TS asset content digests, and disambiguates anonymous frames with colno" do
       staging_js = fingerprint_for(
         "platform" => "javascript",

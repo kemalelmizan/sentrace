@@ -24,17 +24,51 @@ module Sentrace
         token
         authorization
         cookie
-        session_id
         credit_card
         card_number
         cvv
         cvc
         api_key
+        apikey
         ip_address
         remote_addr
         remote_ip
         client_ip
       ].freeze
+
+      AUTH_SESSION_EXACT_KEYS = %w[
+        session
+        session_id
+        _session_id
+        rack.session
+        phpsessid
+        jsessionid
+        connect.sid
+      ].freeze
+
+      AUTH_SESSION_KEY_REGEX = /\A_(?:[a-z0-9_]+_)?session\z|(?:^|[_.-])session[_.-]?token\z/
+
+      FORBIDDEN_USER_FIELD_PATTERNS = %w[
+        password
+        passwd
+        secret
+        token
+        authorization
+        cookie
+        credit_card
+        card_number
+        cvv
+        cvc
+        api_key
+        apikey
+        ip_address
+        remote_addr
+        remote_ip
+        client_ip
+      ].freeze
+
+      MAX_RETAINED_USER_FIELDS = 16
+      MAX_USER_FIELD_BYTES = 256
 
       BEARER_HEADER_REGEX = /\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i
       PAN_CANDIDATE_REGEX = /\b(?:\d[ -]*?){13,19}\b/
@@ -43,12 +77,27 @@ module Sentrace
         def sanitize(normalized_event, project_id:, config: Sentrace.configuration, secret_base: nil)
           new(config: config, secret_base: secret_base).sanitize(normalized_event, project_id: project_id)
         end
+
+        def sanitize_url(raw_url, raw_query_string = nil, config: Sentrace.configuration)
+          new(config: config).sanitize_url(raw_url, raw_query_string)
+        end
       end
 
       def initialize(config: Sentrace.configuration, secret_base: nil)
         @config = config
         @secret_base = secret_base
         @redact_terms = (ALWAYS_REDACT_PATTERNS + Array(@config.redact_fields).map { |f| f.to_s.downcase }).uniq
+        @allow_fields = Array(@config.allow_fields)
+          .map { |f| f.to_s.strip.downcase }
+          .reject(&:empty?)
+          .to_h { |f| [ f, true ] }
+          .freeze
+        @retain_user_fields = Array(@config.retain_user_fields)
+          .map { |f| f.to_s.strip }
+          .reject(&:empty?)
+          .uniq
+          .first(MAX_RETAINED_USER_FIELDS)
+          .freeze
       end
 
       def sanitize(normalized_event, project_id:)
@@ -86,6 +135,35 @@ module Sentrace
         )
       end
 
+      def sanitize_url(raw_url, raw_query_string = nil)
+        return nil if raw_url.nil? || raw_url.to_s.strip.empty?
+
+        uri = URI.parse(raw_url.to_s.strip)
+        uri.user = nil
+        uri.password = nil
+        uri.fragment = nil if uri.respond_to?(:fragment=)
+
+        combined_query = [ uri.query, raw_query_string.is_a?(String) ? raw_query_string : nil ]
+          .compact
+          .reject(&:empty?)
+          .join("&")
+
+        if !combined_query.empty?
+          scrubbed_pairs = URI.decode_www_form(combined_query).map do |k, v|
+            [ k, sensitive_key?(k) ? REDACTED : scrub_text(v) ]
+          end
+          uri.query = URI.encode_www_form(scrubbed_pairs)
+        else
+          uri.query = nil
+        end
+
+        EventNormalizer.truncate_utf8_bytes(uri.to_s, 1024)
+      rescue URI::InvalidURIError, ArgumentError
+        # Strip query string and credentials if URL could not be cleanly parsed
+        fallback = raw_url.to_s.split("?").first.to_s.sub(%r{//[^/@]+@}, "//")
+        EventNormalizer.truncate_utf8_bytes(fallback, 1024)
+      end
+
       private
         def sanitize_request(raw_request)
           return nil unless raw_request.is_a?(Hash)
@@ -100,45 +178,58 @@ module Sentrace
           { "url" => url, "method" => method }.compact
         end
 
-        def sanitize_url(raw_url, raw_query_string)
-          return nil if raw_url.nil? || raw_url.to_s.strip.empty?
-
-          uri = URI.parse(raw_url.to_s.strip)
-          uri.user = nil
-          uri.password = nil
-
-          combined_query = [ uri.query, raw_query_string.is_a?(String) ? raw_query_string : nil ]
-            .compact
-            .reject(&:empty?)
-            .join("&")
-
-          if !combined_query.empty?
-            scrubbed_pairs = URI.decode_www_form(combined_query).map do |k, v|
-              [ k, sensitive_key?(k) ? REDACTED : scrub_text(v) ]
-            end
-            uri.query = URI.encode_www_form(scrubbed_pairs)
-          else
-            uri.query = nil
-          end
-
-          EventNormalizer.truncate_utf8_bytes(uri.to_s, 1024)
-        rescue URI::InvalidURIError, ArgumentError
-          # Strip query string and credentials if URL could not be cleanly parsed
-          fallback = raw_url.to_s.split("?").first.to_s.sub(%r{//[^/@]+@}, "//")
-          EventNormalizer.truncate_utf8_bytes(fallback, 1024)
-        end
-
         def sanitize_user(raw_user, project_id:)
           return nil unless raw_user.is_a?(Hash)
 
-          raw_id = raw_user["id"] || raw_user[:id] ||
-            raw_user["username"] || raw_user[:username] ||
-            raw_user["email"] || raw_user[:email]
-          return nil if raw_id.nil? || raw_id.to_s.strip.empty?
+          raw_id = fetch_user_field(raw_user, "id") ||
+            fetch_user_field(raw_user, "user_id") ||
+            fetch_user_field(raw_user, "userId") ||
+            fetch_user_field(raw_user, "username") ||
+            fetch_user_field(raw_user, "email")
 
-          key_material = "#{effective_secret_base}:sentrace:project:#{project_id}"
-          digest = OpenSSL::HMAC.hexdigest("SHA256", key_material, raw_id.to_s)
-          { "id_hash" => digest }
+          result = {}
+          if !raw_id.nil? && !raw_id.to_s.strip.empty?
+            key_material = "#{effective_secret_base}:sentrace:project:#{project_id}"
+            result["id_hash"] = OpenSSL::HMAC.hexdigest("SHA256", key_material, raw_id.to_s)
+          end
+
+          @retain_user_fields.each do |field_name|
+            next if forbidden_user_field?(field_name)
+
+            raw_val = fetch_user_field(raw_user, field_name)
+            sanitized_val = sanitize_user_scalar(raw_val)
+            result[field_name] = sanitized_val unless sanitized_val.nil?
+          end
+
+          result.empty? ? nil : result
+        end
+
+        def fetch_user_field(raw_user, field_name)
+          return raw_user[field_name] if raw_user.key?(field_name)
+
+          sym = field_name.to_sym
+          raw_user.key?(sym) ? raw_user[sym] : nil
+        end
+
+        def forbidden_user_field?(field_name)
+          downcased = field_name.to_s.strip.downcase
+          return true if downcased.empty? || downcased == "id_hash"
+          return true if FORBIDDEN_CONTEXT_KEYS.include?(downcased) || auth_session_key?(downcased)
+
+          FORBIDDEN_USER_FIELD_PATTERNS.any? { |pat| downcased.include?(pat) }
+        end
+
+        def sanitize_user_scalar(raw_val)
+          case raw_val
+          when String
+            EventNormalizer.truncate_utf8_bytes(scrub_text(raw_val), MAX_USER_FIELD_BYTES)
+          when Numeric
+            raw_val.to_s.bytesize <= MAX_USER_FIELD_BYTES ? raw_val : EventNormalizer.truncate_utf8_bytes(raw_val.to_s, MAX_USER_FIELD_BYTES)
+          when TrueClass, FalseClass
+            raw_val
+          else
+            nil
+          end
         end
 
         def effective_secret_base
@@ -184,7 +275,8 @@ module Sentrace
         def scrub_hash(hash)
           hash.each_with_object({}) do |(k, v), acc|
             key_str = k.to_s
-            if FORBIDDEN_CONTEXT_KEYS.include?(key_str.downcase)
+            downcased = key_str.strip.downcase
+            if FORBIDDEN_CONTEXT_KEYS.include?(downcased) && !@allow_fields.key?(downcased)
               next
             elsif sensitive_key?(key_str)
               acc[key_str] = REDACTED
@@ -208,8 +300,15 @@ module Sentrace
         end
 
         def sensitive_key?(key)
-          downcased = key.to_s.downcase
+          downcased = key.to_s.strip.downcase
+          return false if @allow_fields.key?(downcased)
+          return true if auth_session_key?(downcased)
+
           @redact_terms.any? { |term| downcased.include?(term) }
+        end
+
+        def auth_session_key?(downcased)
+          AUTH_SESSION_EXACT_KEYS.include?(downcased) || AUTH_SESSION_KEY_REGEX.match?(downcased)
         end
 
         def scrub_text(text)
@@ -255,6 +354,24 @@ module Sentrace
 
           if bounded["breadcrumbs"].is_a?(Array)
             bounded["breadcrumbs"] = bounded["breadcrumbs"].last(@config.max_breadcrumbs)
+          end
+
+          if bounded["user"].is_a?(Hash)
+            bounded_user = {}
+            bounded["user"].each do |k, v|
+              break if bounded_user.size >= (MAX_RETAINED_USER_FIELDS + 1)
+
+              key_str = EventNormalizer.truncate_utf8_bytes(k.to_s, 64)
+              next if key_str.nil? || key_str.empty?
+
+              if key_str == "id_hash"
+                bounded_user["id_hash"] = EventNormalizer.truncate_utf8_bytes(v.to_s, 64) unless v.nil?
+              elsif !forbidden_user_field?(key_str)
+                val = sanitize_user_scalar(v)
+                bounded_user[key_str] = val unless val.nil?
+              end
+            end
+            bounded["user"] = bounded_user.empty? ? nil : bounded_user
           end
 
           if bounded.dig("exception", "frames").is_a?(Array)

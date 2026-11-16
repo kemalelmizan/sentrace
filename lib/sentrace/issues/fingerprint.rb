@@ -18,6 +18,8 @@ module Sentrace
       ISO_TIMESTAMP_REGEX = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/
       UUID_REGEX = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i
       LONG_HEX_REGEX = /\b[0-9a-f]{12,}\b/i
+      NUMERIC_WITH_UNIT_REGEX = /(?<![A-Za-z0-9_])-?\d+(?:\.\d+)?(?:\s?%|\s?(?:pct|ns|us|µs|μs|ms|msecs?|secs?|seconds?|s|mins?|minutes?|m|hrs?|hours?|h|days?|d|[kmgtp]i?b|bytes?|b|khz|mhz|ghz|hz|rps|qps|px)\b)/i
+      FLOAT_REGEX = /(?<![A-Za-z0-9_.])-?\d+\.\d+(?!\.\d)\b/
       INTEGER_REGEX = /\b\d+\b/
 
       class << self
@@ -60,7 +62,9 @@ module Sentrace
             .gsub(UUID_REGEX, "<uuid>")
             .gsub(OBJECT_ADDRESS_REGEX, "<hex>")
             .gsub(LONG_HEX_REGEX, "<hex>")
-            .gsub(INTEGER_REGEX, "<int>")
+            .gsub(NUMERIC_WITH_UNIT_REGEX, "<num>")
+            .gsub(FLOAT_REGEX, "<num>")
+            .gsub(INTEGER_REGEX, "<num>")
             .gsub(/\s+/, " ")
             .strip
         end

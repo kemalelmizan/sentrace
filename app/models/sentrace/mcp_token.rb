@@ -5,6 +5,7 @@ module Sentrace
   class McpToken < ApplicationRecord
     TOKEN_PREFIX_HEADER = "snt_mcp_".freeze
     PREFIX_LENGTH = 12
+    ENSURED_TOKEN_FORMAT = /\Asnt_mcp_[A-Za-z0-9_-]{24,256}\z/
 
     scope :active, -> { where(active: true, revoked_at: nil) }
 
@@ -67,7 +68,59 @@ module Sentrace
         end
       end
 
+      def ensure!(name: "default", token: nil)
+        normalized_name = name.to_s.strip
+        raise ArgumentError, "Token name is required" if normalized_name.empty?
+
+        if !token.nil?
+          raw_token = token.to_s.strip
+          unless raw_token.start_with?(TOKEN_PREFIX_HEADER) && raw_token.match?(ENSURED_TOKEN_FORMAT)
+            raise ArgumentError,
+              "MCP token must start with '#{TOKEN_PREFIX_HEADER}' and include at least 24 URL-safe secret characters"
+          end
+
+          digest = digest_token(raw_token)
+          existing = find_by(token_digest: digest)
+          if existing
+            if !existing.active || existing.revoked_at.present?
+              raise ArgumentError, "Provided MCP token has been revoked and cannot be reused"
+            end
+            return [ existing, nil ]
+          end
+
+          record = create_token_idempotently!(
+            name: normalized_name,
+            token_prefix: raw_token[0, PREFIX_LENGTH],
+            token_digest: digest
+          )
+          [ record, nil ]
+        else
+          existing_active = active.where(name: normalized_name).order(created_at: :desc, id: :desc).first
+          return [ existing_active, nil ] if existing_active
+
+          issue!(name: normalized_name)
+        end
+      end
+
       private
+        def create_token_idempotently!(name:, token_prefix:, token_digest:)
+          transaction(requires_new: true) do
+            create!(
+              name: name,
+              token_prefix: token_prefix,
+              token_digest: token_digest,
+              active: true,
+              created_at: Time.current
+            )
+          end
+        rescue ActiveRecord::RecordNotUnique
+          existing = find_by!(token_digest: token_digest)
+          if !existing.active || existing.revoked_at.present?
+            raise ArgumentError, "Provided MCP token has been revoked and cannot be reused"
+          end
+          existing
+        end
+
         def touch_last_used_at(record)
           record.update_columns(last_used_at: Time.current)
         rescue ActiveRecord::ActiveRecordError

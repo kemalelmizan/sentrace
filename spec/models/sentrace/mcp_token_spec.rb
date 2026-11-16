@@ -61,4 +61,47 @@ RSpec.describe Sentrace::McpToken do
       ).to eq(dsn_key)
     end
   end
+
+  describe ".ensure!" do
+    it "idempotently seeds a provided snt_mcp_ token as SHA-256 digest only without duplicating rows" do
+      env_token = "snt_mcp_0123456789abcdef0123456789abcdef"
+
+      record1, issued1 = described_class.ensure!(name: "prod-mcp", token: env_token)
+      record2, issued2 = described_class.ensure!(name: "prod-mcp", token: env_token)
+
+      expect(record1).to eq(record2)
+      expect(issued1).to be_nil
+      expect(issued2).to be_nil
+      expect(described_class.where(name: "prod-mcp").count).to eq(1)
+      expect(record1.token_prefix).to eq("snt_mcp_0123")
+      expect(record1.token_digest).to eq(OpenSSL::Digest::SHA256.hexdigest(env_token))
+      expect(record1.attributes.values).not_to include(env_token)
+      expect(described_class.authenticate(env_token)).to eq(record1)
+    end
+
+    it "issues once when token is nil and rejects weak, unprefixed, or revoked tokens" do
+      gen_record, gen_raw = described_class.ensure!(name: "local-cli")
+      repeat_record, repeat_raw = described_class.ensure!(name: "local-cli")
+
+      expect(gen_raw).to start_with("snt_mcp_")
+      expect(repeat_record).to eq(gen_record)
+      expect(repeat_raw).to be_nil
+
+      expect {
+        described_class.ensure!(name: "bad", token: "plain_secret_0123456789abcdef0123456789")
+      }.to raise_error(ArgumentError, /start with 'snt_mcp_'/)
+
+      expect {
+        described_class.ensure!(name: "bad", token: "snt_mcp_too_short")
+      }.to raise_error(ArgumentError, /at least 24/)
+
+      revoked_raw = "snt_mcp_fedcba9876543210fedcba9876543210"
+      revoked_rec, _ = described_class.ensure!(name: "revoked-env", token: revoked_raw)
+      revoked_rec.revoke!
+
+      expect {
+        described_class.ensure!(name: "revoked-env", token: revoked_raw)
+      }.to raise_error(ArgumentError, /revoked/)
+    end
+  end
 end
