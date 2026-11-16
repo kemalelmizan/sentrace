@@ -6,6 +6,14 @@ abort("The Rails environment is running in production mode!") if Rails.env.produ
 require "rspec/rails"
 require "factory_bot_rails"
 
+FactoryBot.definition_file_paths = [ File.expand_path("factories", __dir__) ]
+FactoryBot.find_definitions
+
+engine_migrations_path = File.expand_path("../db/migrate", __dir__)
+unless ActiveRecord::Migrator.migrations_paths.any? { |path| File.expand_path(path) == engine_migrations_path }
+  ActiveRecord::Migrator.migrations_paths << engine_migrations_path
+end
+
 has_migrations = ActiveRecord::Migrator.migrations_paths.any? do |path|
   Dir.glob(File.join(path, "*.rb")).any?
 end
