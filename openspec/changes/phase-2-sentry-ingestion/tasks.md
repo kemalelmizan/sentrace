@@ -7,8 +7,8 @@
 
 ## 2. Deterministic Fingerprinting, Atomic Issue Grouping & Persistence
 
-- [ ] 2.1 Implement `Sentrace::Issues::Fingerprint` (`lib/sentrace/issues/fingerprint.rb`) for deterministic 64-char SHA-256 digests across explicit `fingerprint`, `exception + normalized in-app frames` (normalizing release/bundle paths and excluding `environment`), and volatile-stripped message fallbacks, and verify standalone unit specs pass
-- [ ] 2.2 Implement `Sentrace::Issues::Grouper` (`lib/sentrace/issues/grouper.rb`) and `Sentrace::Ingestion::Processor` (`lib/sentrace/ingestion/processor.rb`) using PostgreSQL `ON CONFLICT` upserts for concurrency-safe `(project_id, fingerprint)` issue creation/counting, `resolved -> unresolved` regression reopening, and `(project_id, event_id)` deduplication, and verify persistence, deduplication, and multi-threaded concurrency specs pass
+- [x] 2.1 Implement `Sentrace::Issues::Fingerprint` (`lib/sentrace/issues/fingerprint.rb`) for deterministic 64-char SHA-256 digests across explicit `fingerprint`, `exception + normalized in-app frames` (normalizing release/bundle paths and excluding `environment`), and volatile-stripped message fallbacks, and verify standalone unit specs pass
+- [x] 2.2 Implement `Sentrace::Issues::Grouper` (`lib/sentrace/issues/grouper.rb`) and `Sentrace::Ingestion::Processor` (`lib/sentrace/ingestion/processor.rb`) using PostgreSQL `ON CONFLICT` upserts for concurrency-safe `(project_id, fingerprint)` issue creation/counting, `resolved -> unresolved` regression reopening, and `(project_id, event_id)` deduplication, and verify persistence, deduplication, and multi-threaded concurrency specs pass
 
 ## 3. Ingestion HTTP Endpoint & Real `sentry-ruby` SDK Compatibility
 

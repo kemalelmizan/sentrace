@@ -9,5 +9,6 @@ development:
 
 test:
   <<: *default
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 16 } %>
   url: <%= ENV["DATABASE_URL"] %>
   database: <%= ENV.fetch("SENTRACE_TEST_DATABASE", "sentrace_test") %>

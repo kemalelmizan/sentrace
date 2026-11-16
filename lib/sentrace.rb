@@ -6,6 +6,9 @@ require "sentrace/project_manager"
 require "sentrace/ingestion/envelope_parser"
 require "sentrace/ingestion/event_normalizer"
 require "sentrace/ingestion/sanitizer"
+require "sentrace/issues/fingerprint"
+require "sentrace/issues/grouper"
+require "sentrace/ingestion/processor"
 require "sentrace/engine"
 
 module Sentrace
