@@ -2,8 +2,8 @@
 
 ## 1. Engine Configuration & DSN Primitives
 
-- [ ] 1.1 Implement `Sentrace::Configuration` (`lib/sentrace/configuration.rb`) and module accessors (`Sentrace.configure`, `Sentrace.configuration`, `Sentrace.reset_configuration!`) with defaults for enablement, retention periods, payload/field limits, redacted field names, custom sanitizer callable, and MCP environment registry, and verify RSpec unit specs cover defaults, overrides, token redaction on `#inspect`, and `#validate!` errors (including rejecting non-HTTPS remote MCP URLs for non-loopback hosts)
-- [ ] 1.2 Implement `Sentrace::Dsn` (`lib/sentrace/dsn.rb`) to format and parse `<scheme>://<public_key>@<host>[:port][<path_prefix>]/<project_id>` DSNs, and verify unit specs pass for root domains, engine mount prefixes, custom ports, malformed DSNs, and compatibility with `Sentry::DSN.new` from `sentry-ruby`
+- [x] 1.1 Implement `Sentrace::Configuration` (`lib/sentrace/configuration.rb`) and module accessors (`Sentrace.configure`, `Sentrace.configuration`, `Sentrace.reset_configuration!`) with defaults for enablement, retention periods, payload/field limits, redacted field names, custom sanitizer callable, and MCP environment registry, and verify RSpec unit specs cover defaults, overrides, token redaction on `#inspect`, and `#validate!` errors (including rejecting non-HTTPS remote MCP URLs for non-loopback hosts)
+- [x] 1.2 Implement `Sentrace::Dsn` (`lib/sentrace/dsn.rb`) to format and parse `<scheme>://<public_key>@<host>[:port][<path_prefix>]/<project_id>` DSNs, and verify unit specs pass for root domains, engine mount prefixes, custom ports, malformed DSNs, and compatibility with `Sentry::DSN.new` from `sentry-ruby`
 
 ## 2. PostgreSQL Migrations & Domain Models
 

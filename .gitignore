@@ -14,5 +14,6 @@
 /.context-drop/
 .byebug_history
 .rspec_status
+spec/examples.txt
 .DS_Store
 *.gem
