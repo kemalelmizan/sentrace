@@ -9,6 +9,15 @@ RSpec.describe Sentrace::Configuration do
     it "applies SPEC.md payload, retention, and privacy defaults" do
       expect(config.enabled).to be(true)
       expect(config.deployment_environment).to eq("test")
+      expect(config.project_slug).to be_nil
+      expect(config.project_id).to be_nil
+      expect(config.capture_unhandled_exceptions).to be(false)
+      expect(config.sample_rate).to eq(1.0)
+      expect(config.excluded_exceptions).to include("ActiveRecord::RecordNotFound", "ActionController::RoutingError", "ActionController::ParameterMissing")
+      expect(config.before_send).to be_nil
+      expect(config.breadcrumbs_logger).to eq([])
+      expect(config.async_queue_size).to eq(256)
+      expect(config.capture_dispatch).to eq(:async)
       expect(config.frontend_dsn).to be_nil
       expect(config.cors_allowed_origins).to eq([])
       expect(config.retention_period).to eq(30.days)
@@ -25,6 +34,8 @@ RSpec.describe Sentrace::Configuration do
       expect(config.max_context_entries).to eq(16)
       expect(config.max_context_bytes).to eq(8.kilobytes)
       expect(config.redact_fields).to eq(%w[password token authorization cookie credit_card])
+      expect(config.allow_fields).to eq([])
+      expect(config.retain_user_fields).to eq([])
       expect(config.sanitizer).to be_nil
       expect(config.environments.keys).to eq([ :local ])
       expect(config.environments[:local].transport).to eq(:local)
@@ -50,6 +61,26 @@ RSpec.describe Sentrace::Configuration do
       Sentrace.configure { |config| config.sanitizer = custom }
 
       expect(Sentrace.configuration.sanitizer).to eq(custom)
+    end
+
+    it "validates allow_fields and retain_user_fields as Arrays of Strings or Symbols" do
+      Sentrace.configure do |config|
+        config.allow_fields = [ "token_present", :token_expires_in ]
+        config.retain_user_fields = %w[id email username name spoofed_user_id]
+      end
+
+      expect(Sentrace.configuration.allow_fields).to eq([ "token_present", :token_expires_in ])
+      expect(Sentrace.configuration.retain_user_fields).to eq(%w[id email username name spoofed_user_id])
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.allow_fields = "token_present" }
+      }.to raise_error(Sentrace::ConfigurationError, /allow_fields must be an Array/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.retain_user_fields = [ 123 ] }
+      }.to raise_error(Sentrace::ConfigurationError, /retain_user_fields must be an Array/)
     end
 
     it "rejects non-callable custom sanitizers" do
@@ -131,6 +162,58 @@ RSpec.describe Sentrace::Configuration do
       expect {
         Sentrace.configure { |config| config.frontend_dsn = "not-a-dsn" }
       }.to raise_error(Sentrace::ConfigurationError, /frontend_dsn is invalid/)
+    end
+
+    it "derives capture_unhandled_exceptions from project_slug/project_id unless explicitly set and validates client settings" do
+      expect(Sentrace.configuration.capture_unhandled_exceptions).to be(false)
+
+      Sentrace.configure { |config| config.project_slug = "monolith" }
+      expect(Sentrace.configuration.capture_unhandled_exceptions).to be(true)
+
+      Sentrace.configure { |config| config.capture_unhandled_exceptions = false }
+      expect(Sentrace.configuration.capture_unhandled_exceptions).to be(false)
+
+      Sentrace.reset_configuration!
+      Sentrace.configure do |config|
+        config.project_id = 42
+        config.sample_rate = 0.5
+        config.before_send = ->(ev, _hint) { ev }
+        config.breadcrumbs_logger = %i[active_support_logger http_logger]
+        config.async_queue_size = 512
+        config.capture_dispatch = "inline"
+      end
+      expect(Sentrace.configuration.capture_unhandled_exceptions).to be(true)
+      expect(Sentrace.configuration.capture_dispatch).to eq(:inline)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.sample_rate = 1.5 }
+      }.to raise_error(Sentrace::ConfigurationError, /sample_rate/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.before_send = "invalid" }
+      }.to raise_error(Sentrace::ConfigurationError, /before_send must respond to #call/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.breadcrumbs_logger = [ :unknown_logger ] }
+      }.to raise_error(Sentrace::ConfigurationError, /breadcrumbs_logger/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.async_queue_size = 0 }
+      }.to raise_error(Sentrace::ConfigurationError, /async_queue_size must be a positive Integer/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.capture_dispatch = :background_job }
+      }.to raise_error(Sentrace::ConfigurationError, /capture_dispatch/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.project_id = -1 }
+      }.to raise_error(Sentrace::ConfigurationError, /project_id/)
     end
   end
 

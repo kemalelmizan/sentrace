@@ -12,6 +12,28 @@ module Sentrace
       credit_card
     ].freeze
 
+    DEFAULT_EXCLUDED_EXCEPTIONS = %w[
+      AbstractController::ActionNotFound
+      ActionController::BadRequest
+      ActionController::InvalidAuthenticityToken
+      ActionController::InvalidCrossOriginRequest
+      ActionController::MethodNotAllowed
+      ActionController::NotImplemented
+      ActionController::ParameterMissing
+      ActionController::RoutingError
+      ActionController::UnknownFormat
+      ActionController::UnknownHttpMethod
+      ActionDispatch::Http::Parameters::ParseError
+      ActiveRecord::RecordNotFound
+      CGI::Session::CookieStore::TamperedWithCookie
+      Mime::Type::InvalidMimeType
+      Rack::QueryParser::InvalidParameterError
+      Rack::QueryParser::ParameterTypeError
+    ].freeze
+
+    SUPPORTED_BREADCRUMBS_LOGGERS = %i[active_support_logger http_logger].freeze
+    SUPPORTED_CAPTURE_DISPATCH_MODES = %i[async inline].freeze
+
     LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1 [::1]].freeze
 
     POSITIVE_NUMERIC_ATTRIBUTES = %i[
@@ -39,6 +61,14 @@ module Sentrace
 
     attr_accessor :enabled,
       :deployment_environment,
+      :project_slug,
+      :project_id,
+      :sample_rate,
+      :excluded_exceptions,
+      :before_send,
+      :breadcrumbs_logger,
+      :async_queue_size,
+      :capture_dispatch,
       :frontend_dsn,
       :release,
       :cors_allowed_origins,
@@ -55,16 +85,28 @@ module Sentrace
       :max_context_entries,
       :max_context_bytes,
       :redact_fields,
+      :allow_fields,
+      :retain_user_fields,
       :sanitizer,
       :internal_authenticator,
       :user_hash_secret,
       :remote_timeout
 
+    attr_writer :capture_unhandled_exceptions
     attr_reader :environments
 
     def initialize
       @enabled = true
       @deployment_environment = default_deployment_environment
+      @project_slug = nil
+      @project_id = nil
+      @capture_unhandled_exceptions = nil
+      @sample_rate = 1.0
+      @excluded_exceptions = DEFAULT_EXCLUDED_EXCEPTIONS.dup
+      @before_send = nil
+      @breadcrumbs_logger = []
+      @async_queue_size = 256
+      @capture_dispatch = :async
       @frontend_dsn = nil
       @release = ENV["APP_RELEASE"]
       @cors_allowed_origins = []
@@ -81,6 +123,8 @@ module Sentrace
       @max_context_entries = 16
       @max_context_bytes = 8.kilobytes
       @redact_fields = DEFAULT_REDACT_FIELDS.dup
+      @allow_fields = []
+      @retain_user_fields = []
       @sanitizer = nil
       @internal_authenticator = nil
       @user_hash_secret = nil
@@ -124,6 +168,14 @@ module Sentrace
         raise ConfigurationError, "redact_fields must be an Array of field names"
       end
 
+      unless allow_fields.is_a?(Array) && allow_fields.all? { |f| f.is_a?(String) || f.is_a?(Symbol) }
+        raise ConfigurationError, "allow_fields must be an Array of field names"
+      end
+
+      unless retain_user_fields.is_a?(Array) && retain_user_fields.all? { |f| f.is_a?(String) || f.is_a?(Symbol) }
+        raise ConfigurationError, "retain_user_fields must be an Array of field names"
+      end
+
       unless retention_batch_size.is_a?(Integer) && retention_batch_size.positive?
         raise ConfigurationError, "retention_batch_size must be a positive Integer (got #{retention_batch_size.inspect})"
       end
@@ -140,9 +192,22 @@ module Sentrace
         raise ConfigurationError, "deployment_environment must be a non-empty String or Symbol"
       end
 
+      validate_capture_client_settings!
       validate_frontend_settings!
       validate_environments!
       true
+    end
+
+    def capture_unhandled_exceptions
+      return @capture_unhandled_exceptions unless @capture_unhandled_exceptions.nil?
+
+      target_project_configured?
+    end
+
+    def target_project_configured?
+      has_id = !project_id.nil? && !project_id.to_s.strip.empty?
+      has_slug = !project_slug.nil? && !project_slug.to_s.strip.empty?
+      has_id || has_slug
     end
 
     def cors_origin_header_for(origin)
@@ -171,6 +236,56 @@ module Sentrace
     end
 
     private
+      def validate_capture_client_settings!
+        unless project_slug.nil? || project_slug.is_a?(String) || project_slug.is_a?(Symbol)
+          raise ConfigurationError, "project_slug must be a String, Symbol, or nil"
+        end
+
+        unless valid_project_id?(project_id)
+          raise ConfigurationError, "project_id must be a positive Integer or nil (got #{project_id.inspect})"
+        end
+
+        unless @capture_unhandled_exceptions.nil? || @capture_unhandled_exceptions == true || @capture_unhandled_exceptions == false
+          raise ConfigurationError, "capture_unhandled_exceptions must be true, false, or nil"
+        end
+
+        unless sample_rate.is_a?(Numeric) && (!sample_rate.respond_to?(:nan?) || !sample_rate.nan?) && sample_rate >= 0.0 && sample_rate <= 1.0
+          raise ConfigurationError, "sample_rate must be a Numeric between 0.0 and 1.0 (got #{sample_rate.inspect})"
+        end
+
+        unless excluded_exceptions.is_a?(Array) && excluded_exceptions.all? { |e| e.is_a?(String) || e.is_a?(Symbol) || e.is_a?(Module) }
+          raise ConfigurationError, "excluded_exceptions must be an Array of exception class names or Modules"
+        end
+
+        if !before_send.nil? && !before_send.respond_to?(:call)
+          raise ConfigurationError, "before_send must respond to #call"
+        end
+
+        unless breadcrumbs_logger.is_a?(Array) && breadcrumbs_logger.all? { |l| (l.is_a?(String) || l.is_a?(Symbol)) && SUPPORTED_BREADCRUMBS_LOGGERS.include?(l.to_sym) }
+          raise ConfigurationError,
+            "breadcrumbs_logger must be an Array containing only #{SUPPORTED_BREADCRUMBS_LOGGERS.inspect}"
+        end
+
+        unless async_queue_size.is_a?(Integer) && async_queue_size.positive?
+          raise ConfigurationError, "async_queue_size must be a positive Integer (got #{async_queue_size.inspect})"
+        end
+
+        unless (capture_dispatch.is_a?(Symbol) || capture_dispatch.is_a?(String)) && SUPPORTED_CAPTURE_DISPATCH_MODES.include?(capture_dispatch.to_sym)
+          raise ConfigurationError,
+            "capture_dispatch must be :async or :inline (got #{capture_dispatch.inspect})"
+        end
+
+        @capture_dispatch = capture_dispatch.to_sym
+      end
+
+      def valid_project_id?(val)
+        return true if val.nil?
+        return val.positive? if val.is_a?(Integer)
+        return true if val.is_a?(String) && (val.strip.empty? || val.strip.match?(/\A[1-9]\d*\z/))
+
+        false
+      end
+
       def validate_frontend_settings!
         unless frontend_dsn.nil? || frontend_dsn.to_s.strip.empty?
           Dsn.parse(frontend_dsn.to_s)

@@ -198,6 +198,30 @@ RSpec.describe Sentrace::Ingestion::EventNormalizer do
       )
       expect(normalized.event_data["contexts"]).to eq("extra" => { "cart_items" => 3, "step" => "payment" })
       expect(normalized.event_data["tags"]).to eq("request_id" => "req-js-98765")
+      expect(normalized.event_data["exception"]).not_to have_key("mechanism")
+    end
+
+    it "preserves bounded exception mechanism metadata when present" do
+      raw_event = {
+        "event_id" => "223344556677889900aabbccddeeff11",
+        "timestamp" => "2026-11-16T12:00:00Z",
+        "platform" => "ruby",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "RuntimeError",
+              "value" => "unhandled crash",
+              "mechanism" => { "type" => "rack", "handled" => false, "ignored_extra" => "secret" }
+            }
+          ]
+        }
+      }
+
+      normalized = described_class.normalize(raw_event, received_at: received_at, config: config)
+      expect(normalized.event_data.dig("exception", "mechanism")).to eq(
+        "type" => "rack",
+        "handled" => false
+      )
     end
   end
 end

@@ -1,6 +1,12 @@
 Sentrace.configure do |config|
   config.enabled = ENV.fetch("SENTRACE_ENABLED", "true") == "true"
 
+  # Native in-process Ruby backend error capture (Rack/Rails, Sidekiq, ActiveJob — no sentry-ruby needed):
+  # config.project_slug = ENV.fetch("SENTRACE_PROJECT_SLUG", nil)
+  # config.breadcrumbs_logger = %i[active_support_logger http_logger]
+  # config.sample_rate = 1.0
+  # config.async_queue_size = 256
+
   # Public DSN rendered by `sentrace_meta_tags` for frontend JavaScript error capture:
   # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
   # config.release = ENV["APP_RELEASE"]
@@ -20,6 +26,12 @@ Sentrace.configure do |config|
     cookie
     credit_card
   ]
+
+  # Exempt specific non-secret telemetry keys from key-name redaction:
+  # config.allow_fields = %w[token_present token_expires_in]
+
+  # Retain specific non-secret user scalar fields alongside `user.id_hash` (internal apps):
+  # config.retain_user_fields = %w[id email username name]
 
   config.environments = {
     local: {

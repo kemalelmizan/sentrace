@@ -189,11 +189,25 @@ module Sentrace
             }.compact
           end
 
-          {
+          result = {
             "type" => truncate_chars(primary["type"], 255),
             "value" => self.class.truncate_utf8_bytes(primary["value"], @config.max_message_bytes),
             "frames" => bounded_frames
           }
+          mechanism = extract_mechanism(primary["mechanism"])
+          result["mechanism"] = mechanism if mechanism
+          result
+        end
+
+        def extract_mechanism(raw_mechanism)
+          return nil unless raw_mechanism.is_a?(Hash)
+
+          entry = {}
+          type = truncate_chars(raw_mechanism["type"] || raw_mechanism[:type], 64)
+          entry["type"] = type if type
+          handled = raw_mechanism.key?("handled") ? raw_mechanism["handled"] : raw_mechanism[:handled]
+          entry["handled"] = handled if handled == true || handled == false
+          entry.empty? ? nil : entry
         end
 
         def derive_culprit(exception_data)
