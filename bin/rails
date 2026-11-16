@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+APP_PATH = File.expand_path("../spec/dummy/config/application", __dir__)
+ENGINE_ROOT = File.expand_path("..", __dir__)
+ENGINE_PATH = File.expand_path("../lib/sentrace/engine", __dir__)
+
+require "bundler/setup"
+require_relative "../spec/dummy/config/boot"
+require "rails/engine/commands"

@@ -1,0 +1,34 @@
+schema: spec-driven
+
+context: |
+  Product reference: `SPEC.md` defines the full Sentrace vision, MVP scope, and 5-phase roadmap. Keep all changes aligned with its boundaries.
+  Architecture: Sentrace (`sentrace` gem) is a self-hosted, isolated Ruby on Rails Engine (`Sentrace::Engine`, table prefix `sentrace_`) for Sentry-compatible error tracking with a federated Model Context Protocol (MCP) interface.
+  Supported stack: Ruby >= 3.2 (local dev Ruby 3.3.13), Rails >= 7.1, PostgreSQL >= 15 (sole supported database), official `mcp` Ruby gem (~> 1.0), RSpec + FactoryBot (`spec/` with dummy Rails app at `spec/dummy/`), and RuboCop (`rubocop-rails-omakase`).
+  Directory layout: Conventional Rails Engine layout — ActiveRecord models, controllers, and ActiveJob classes live in `app/{models,controllers,jobs}/sentrace/`; pure Ruby domain modules (`ingestion/`, `issues/`, `mcp/`), configuration, generators, and rake tasks live in `lib/sentrace/`, `lib/generators/`, and `lib/tasks/`.
+  MVP non-goals (strictly exclude): No rows or tables for transactions, spans, performance metrics, sessions, replays, logs, attachments, external object storage, alerting, or a web UI/dashboard. Never require Devise, a host user model, Redis, or a specific ActiveJob adapter.
+  Storage discipline: Keep bounded event context in `sentrace_events.event_data` (`jsonb`). Never store raw envelopes, never split breadcrumbs/frames/tags/contexts into child tables, and never add GIN indexes over full `event_data` or arbitrary tags without benchmark evidence.
+  Security & privacy invariants: Enforce request size limits before JSON parsing and validate project credentials before expensive work. Strip request bodies, cookies, authorization headers, tokens, passwords, payment data, raw IPs, raw emails/names, and arbitrary env vars before persistence; hash user IDs per project. Ingestion DSN public keys and remote MCP bearer tokens are separate credentials; secrets/tokens are stored only as digests and compared in constant time; remote MCP requires HTTPS outside local dev.
+  Federation invariants: Remote environment failures or timeouts must be isolated per environment and surfaced with explicit failure attribution in MCP responses, never silently treated as empty results.
+  Capability naming convention: Use flat kebab-case capability directories under `openspec/specs/` (e.g., `engine-configuration`, `storage-foundation`, `project-management`, `sentry-ingestion`, `issue-grouping`, `privacy-sanitization`, `event-retention`, `mcp-server`, `mcp-federation`).
+
+rules:
+  proposal:
+    - Reference relevant sections of `SPEC.md` and explicitly state out-of-scope items to prevent observability or storage scope creep.
+    - List every capability directory under `specs/` that will be added or modified.
+  specs:
+    - State normative behavioral requirements using RFC 2119 keywords (`MUST`, `SHALL`, `MUST NOT`).
+    - Include concrete `#### Scenario:` cases using `WHEN` / `THEN` (plus `GIVEN` where setup matters) covering happy paths, payload/storage bounds, security/auth edge cases, and concurrency or failure handling.
+  design:
+    - Document PostgreSQL schema, index selectivity, concurrency/upsert semantics, and memory/payload bounds whenever storage or ingestion is affected.
+    - Clarify boundaries between Rails layer (`app/`) and pure domain services (`lib/sentrace/`).
+  tasks:
+    - Order tasks in small, independently testable increments with explicit RSpec coverage (unit and request/integration) and RuboCop verification.
+
+operations:
+  apply:
+    guidance:
+      - Prefix shell commands with `rtk` per workspace rules (e.g., `rtk bundle exec rspec`, `rtk bundle exec rubocop`).
+      - Write specs alongside each vertical slice and ensure zero `rubocop-rails-omakase` offenses before completing the change.
+  archive:
+    guidance:
+      - Run `rtk openspec validate --all --strict --no-interactive` and verify green test and lint suites before archiving delta specs into `openspec/specs/`.

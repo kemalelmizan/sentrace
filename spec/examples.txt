@@ -1,0 +1,4 @@
+example_id                   | status | run_time        |
+---------------------------- | ------ | --------------- |
+./spec/sentrace_spec.rb[1:1] | passed | 0.10393 seconds |
+./spec/sentrace_spec.rb[1:2] | passed | 0.00048 seconds |
