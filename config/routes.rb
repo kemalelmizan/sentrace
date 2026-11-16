@@ -1,5 +1,6 @@
 Sentrace::Engine.routes.draw do
   post "/api/:project_id/envelope", to: "ingestion#envelope"
+  match "/api/:project_id/envelope", to: "ingestion#options", via: :options
   match "/mcp", to: "mcp#handle", via: [ :post, :get, :delete ]
 
   namespace :internal do

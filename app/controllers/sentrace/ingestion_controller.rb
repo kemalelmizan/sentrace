@@ -6,6 +6,12 @@ module Sentrace
     GZIP_CHUNK_BYTES = 16 * 1024
     HEADER_PEEK_BYTES = 16 * 1024
 
+    before_action :apply_cors_headers
+
+    def options
+      head :no_content
+    end
+
     def envelope
       config = Sentrace.configuration
       unless config.enabled
@@ -42,6 +48,17 @@ module Sentrace
     end
 
     private
+      def apply_cors_headers
+        allowed_origin = Sentrace.configuration.cors_origin_header_for(request.headers["Origin"])
+        return unless allowed_origin
+
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        response.headers["Vary"] = "Origin" unless allowed_origin == "*"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Content-Encoding, X-Sentry-Auth, Authorization"
+        response.headers["Access-Control-Max-Age"] = "86400"
+      end
+
       def read_bounded_stream(io, max_size)
         return "".b if io.nil?
 

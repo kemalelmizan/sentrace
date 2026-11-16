@@ -1,6 +1,11 @@
 Sentrace.configure do |config|
   config.enabled = ENV.fetch("SENTRACE_ENABLED", "true") == "true"
 
+  # Public DSN rendered by `sentrace_meta_tags` for frontend JavaScript error capture:
+  # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
+  # config.release = ENV["APP_RELEASE"]
+  # config.cors_allowed_origins = []
+
   config.retention_period = 30.days
   config.orphan_issue_retention_period = 7.days
 

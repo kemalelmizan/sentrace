@@ -154,5 +154,50 @@ RSpec.describe Sentrace::Ingestion::EventNormalizer do
         )
       }.to raise_error(Sentrace::EnvelopeParseError, /timestamp/i)
     end
+
+    it "preserves JavaScript stack colno, folds top-level extra into contexts, and extracts safe X-Request-Id into tags" do
+      raw_event = {
+        "event_id" => "11223344556677889900aabbccddeeff",
+        "timestamp" => "2026-11-16T12:00:00Z",
+        "platform" => "javascript",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "TypeError",
+              "value" => "Cannot read properties of null (reading 'submit')",
+              "stacktrace" => {
+                "frames" => [
+                  {
+                    "filename" => "https://app.example.com/assets/checkout-a1b2c3d4.js",
+                    "function" => "submitOrder",
+                    "lineno" => 1,
+                    "colno" => 4820,
+                    "in_app" => true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "extra" => { "cart_items" => 3, "step" => "payment" },
+        "request" => {
+          "url" => "https://app.example.com/checkout",
+          "method" => "POST",
+          "headers" => { "X-Request-Id" => "req-js-98765", "Cookie" => "secret=1" }
+        }
+      }
+
+      normalized = described_class.normalize(raw_event, received_at: received_at, config: config)
+      frame = normalized.event_data.dig("exception", "frames").first
+      expect(frame).to eq(
+        "filename" => "https://app.example.com/assets/checkout-a1b2c3d4.js",
+        "function" => "submitOrder",
+        "lineno" => 1,
+        "colno" => 4820,
+        "in_app" => true
+      )
+      expect(normalized.event_data["contexts"]).to eq("extra" => { "cart_items" => 3, "step" => "payment" })
+      expect(normalized.event_data["tags"]).to eq("request_id" => "req-js-98765")
+    end
   end
 end

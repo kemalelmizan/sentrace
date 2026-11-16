@@ -9,6 +9,8 @@ RSpec.describe Sentrace::Configuration do
     it "applies SPEC.md payload, retention, and privacy defaults" do
       expect(config.enabled).to be(true)
       expect(config.deployment_environment).to eq("test")
+      expect(config.frontend_dsn).to be_nil
+      expect(config.cors_allowed_origins).to eq([])
       expect(config.retention_period).to eq(30.days)
       expect(config.orphan_issue_retention_period).to eq(7.days)
       expect(config.retention_batch_size).to eq(1_000)
@@ -95,6 +97,40 @@ RSpec.describe Sentrace::Configuration do
       expect {
         Sentrace.configure { |config| config.retention_period = -5 }
       }.to raise_error(Sentrace::ConfigurationError, /retention_period must be a positive number/)
+    end
+
+    it "validates frontend_dsn, release, and cors_allowed_origins and strips DSN secrets in #inspect" do
+      Sentrace.configure do |config|
+        config.frontend_dsn = "https://pub123:dontleak@api.example.com/sentrace/1"
+        config.release = "2026.11.16"
+        config.cors_allowed_origins = [ "https://app.example.com", "http://localhost:5173" ]
+      end
+
+      cfg = Sentrace.configuration
+      expect(cfg.release).to eq("2026.11.16")
+      expect(cfg.cors_origin_header_for("https://app.example.com")).to eq("https://app.example.com")
+      expect(cfg.cors_origin_header_for("http://localhost:5173")).to eq("http://localhost:5173")
+      expect(cfg.cors_origin_header_for("https://evil.example.com")).to be_nil
+      expect(cfg.inspect).not_to include("dontleak")
+      expect(cfg.inspect).to include("https://pub123@api.example.com/sentrace/1")
+
+      Sentrace.configure { |config| config.cors_allowed_origins = "*" }
+      expect(Sentrace.configuration.cors_origin_header_for("https://any.example.com")).to eq("*")
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.cors_allowed_origins = 123 }
+      }.to raise_error(Sentrace::ConfigurationError, /cors_allowed_origins/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.cors_allowed_origins = [ "https://app.example.com/with/path" ] }
+      }.to raise_error(Sentrace::ConfigurationError, /cors_allowed_origins/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.frontend_dsn = "not-a-dsn" }
+      }.to raise_error(Sentrace::ConfigurationError, /frontend_dsn is invalid/)
     end
   end
 

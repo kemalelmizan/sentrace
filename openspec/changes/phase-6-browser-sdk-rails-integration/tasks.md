@@ -2,10 +2,10 @@
 
 ## 1. Rails Engine Configuration, CORS Ingestion, and Browser Normalization
 
-- [ ] 1.1 Add `frontend_dsn`, `release`, and `cors_allowed_origins` to `Sentrace::Configuration` with validation and update `sentrace:install` generator instructions, verified with `bundle exec rspec spec/lib/sentrace/configuration_spec.rb spec/generators/install_generator_spec.rb`
-- [ ] 1.2 Add `OPTIONS /api/:project_id/envelope` preflight handling and origin-validated CORS headers on `Sentrace::IngestionController`, verified with `bundle exec rspec spec/requests/ingestion_spec.rb`
-- [ ] 1.3 Preserve integer stack frame `colno`, fold top-level `extra` into bounded `contexts["extra"]`, and extract safe `X-Request-Id` headers into `tags["request_id"]` in `EventNormalizer`, verified with `bundle exec rspec spec/lib/sentrace/ingestion/event_normalizer_spec.rb`
-- [ ] 1.4 Normalize browser URLs (stripping origins, query strings, and fragments), strip JS/TS asset content-digest suffixes, and disambiguate anonymous frames with `colno` in `Issues::Fingerprint`, verified with `bundle exec rspec spec/lib/sentrace/issues/fingerprint_spec.rb`
+- [x] 1.1 Add `frontend_dsn`, `release`, and `cors_allowed_origins` to `Sentrace::Configuration` with validation and update `sentrace:install` generator instructions, verified with `bundle exec rspec spec/lib/sentrace/configuration_spec.rb spec/generators/install_generator_spec.rb`
+- [x] 1.2 Add `OPTIONS /api/:project_id/envelope` preflight handling and origin-validated CORS headers on `Sentrace::IngestionController`, verified with `bundle exec rspec spec/requests/ingestion_spec.rb`
+- [x] 1.3 Preserve integer stack frame `colno`, fold top-level `extra` into bounded `contexts["extra"]`, and extract safe `X-Request-Id` headers into `tags["request_id"]` in `EventNormalizer`, verified with `bundle exec rspec spec/lib/sentrace/ingestion/event_normalizer_spec.rb`
+- [x] 1.4 Normalize browser URLs (stripping origins, query strings, and fragments), strip JS/TS asset content-digest suffixes, and disambiguate anonymous frames with `colno` in `Issues::Fingerprint`, verified with `bundle exec rspec spec/lib/sentrace/issues/fingerprint_spec.rb`
 
 ## 2. Rails View Helpers and Cross-Stack MCP Correlation
 

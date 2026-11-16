@@ -102,6 +102,20 @@ module Sentrace
       "#{scheme}://#{userinfo}@#{authority_host}#{path_prefix}/#{project_id}"
     end
 
+    def without_secret
+      return self if secret_key.nil?
+
+      self.class.new(
+        scheme: scheme,
+        public_key: public_key,
+        secret_key: nil,
+        host: host,
+        port: port,
+        path_prefix: path_prefix,
+        project_id: project_id
+      )
+    end
+
     def envelope_endpoint
       "#{scheme}://#{authority_host}#{path_prefix}/api/#{project_id}/envelope/"
     end

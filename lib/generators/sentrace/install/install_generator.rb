@@ -74,6 +74,14 @@ module Sentrace
                  config.environment = Rails.env
                  config.release = ENV["APP_RELEASE"]
                end
+
+            4. Configure frontend browser capture (optional):
+               npm install sentrace
+               # In app/views/layouts/application.html.erb <head>:
+               #   <%= sentrace_meta_tags %>
+               # In app/javascript/application.js:
+               #   import * as Sentrace from "sentrace"
+               #   Sentrace.init()
         INSTRUCTIONS
       end
 

@@ -229,4 +229,40 @@ RSpec.describe "Sentrace Envelope Ingestion API", type: :request do
       expect(response.body).not_to include("db.internal")
     end
   end
+
+  describe "browser CORS preflight and query-string authentication" do
+    it "responds to OPTIONS preflight and attaches CORS headers for allowed origins while omitting them for unlisted origins" do
+      Sentrace.configure do |config|
+        config.cors_allowed_origins = [ "https://spa.example.com" ]
+      end
+
+      process :options, "/sentrace/api/#{project.id}/envelope", headers: {
+        "Origin" => "https://spa.example.com",
+        "Access-Control-Request-Method" => "POST"
+      }
+
+      expect(response).to have_http_status(:no_content)
+      expect(response.headers["Access-Control-Allow-Origin"]).to eq("https://spa.example.com")
+      expect(response.headers["Vary"]).to include("Origin")
+      expect(response.headers["Access-Control-Allow-Methods"]).to eq("POST, OPTIONS")
+
+      event_id = "abababababababababababababababab"
+      body = build_envelope(events: [ { event_id: event_id, platform: "javascript", message: "SPA error" } ])
+      post "/sentrace/api/#{project.id}/envelope?sentry_key=#{project_key.public_key}&sentry_version=7&sentry_client=sentrace-js/0.1.0",
+        params: body,
+        headers: {
+          "Origin" => "https://spa.example.com",
+          "Content-Type" => "text/plain;charset=UTF-8"
+        }
+
+      expect(response).to have_http_status(:ok)
+      expect(response.headers["Access-Control-Allow-Origin"]).to eq("https://spa.example.com")
+      expect(response.parsed_body).to eq("id" => event_id)
+
+      process :options, "/sentrace/api/#{project.id}/envelope", headers: {
+        "Origin" => "https://evil.example.com"
+      }
+      expect(response.headers["Access-Control-Allow-Origin"]).to be_nil
+    end
+  end
 end

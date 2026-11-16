@@ -160,5 +160,101 @@ RSpec.describe Sentrace::Issues::Fingerprint do
       expect(fp_a).to eq(fp_b)
       expect(fp_a).not_to eq(fp_different)
     end
+
+    it "normalizes browser URLs, strips JS/TS asset content digests, and disambiguates anonymous frames with colno" do
+      staging_js = fingerprint_for(
+        "platform" => "javascript",
+        "environment" => "staging",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "TypeError",
+              "value" => "Cannot read properties of undefined",
+              "stacktrace" => {
+                "frames" => [
+                  {
+                    "filename" => "https://staging.example.com/assets/checkout-a1b2c3d4.js?v=123",
+                    "function" => "submitOrder",
+                    "lineno" => 1,
+                    "colno" => 420,
+                    "in_app" => true
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      )
+
+      production_js = fingerprint_for(
+        "platform" => "javascript",
+        "environment" => "production",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "TypeError",
+              "value" => "undefined is not an object",
+              "stacktrace" => {
+                "frames" => [
+                  {
+                    "filename" => "https://app.example.com/assets/checkout-B9xK2pQ1.js#chunk",
+                    "function" => "submitOrder",
+                    "lineno" => 1,
+                    "colno" => 910,
+                    "in_app" => true
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      )
+
+      expect(staging_js).to eq(production_js)
+      expect(described_class.normalize_filename("https://app.example.com/assets/order-summary.js")).to eq("assets/order-summary.js")
+
+      anon_chrome = fingerprint_for(
+        "platform" => "javascript",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "Error",
+              "stacktrace" => {
+                "frames" => [ { "filename" => "https://app.example.com/assets/app-1234abcd.js", "function" => "<anonymous>", "lineno" => 1, "colno" => 120, "in_app" => true } ]
+              }
+            }
+          ]
+        }
+      )
+      anon_safari_same_spot = fingerprint_for(
+        "platform" => "javascript",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "Error",
+              "stacktrace" => {
+                "frames" => [ { "filename" => "https://app.example.com/assets/app-99887766.js", "function" => "?", "lineno" => 1, "colno" => 120, "in_app" => true } ]
+              }
+            }
+          ]
+        }
+      )
+      anon_different_col = fingerprint_for(
+        "platform" => "javascript",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "Error",
+              "stacktrace" => {
+                "frames" => [ { "filename" => "https://app.example.com/assets/app-99887766.js", "function" => "?", "lineno" => 1, "colno" => 8450, "in_app" => true } ]
+              }
+            }
+          ]
+        }
+      )
+
+      expect(anon_chrome).to eq(anon_safari_same_spot)
+      expect(anon_chrome).not_to eq(anon_different_col)
+    end
   end
 end

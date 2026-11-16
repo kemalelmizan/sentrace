@@ -47,6 +47,8 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
 
     expect(output).to include("Sentry.init do |config|")
     expect(output).to include("@localhost:3000/sentrace/1")
+    expect(output).to include("npm install sentrace")
+    expect(output).to include("sentrace_meta_tags")
   end
 
   it "is idempotent when re-run in an already installed host application" do

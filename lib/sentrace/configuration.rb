@@ -39,6 +39,9 @@ module Sentrace
 
     attr_accessor :enabled,
       :deployment_environment,
+      :frontend_dsn,
+      :release,
+      :cors_allowed_origins,
       :retention_period,
       :orphan_issue_retention_period,
       :retention_batch_size,
@@ -62,6 +65,9 @@ module Sentrace
     def initialize
       @enabled = true
       @deployment_environment = default_deployment_environment
+      @frontend_dsn = nil
+      @release = ENV["APP_RELEASE"]
+      @cors_allowed_origins = []
       @retention_period = 30.days
       @orphan_issue_retention_period = 7.days
       @retention_batch_size = 1_000
@@ -134,13 +140,30 @@ module Sentrace
         raise ConfigurationError, "deployment_environment must be a non-empty String or Symbol"
       end
 
+      validate_frontend_settings!
       validate_environments!
       true
     end
 
+    def cors_origin_header_for(origin)
+      raw_origin = origin.to_s.strip
+      return nil if raw_origin.empty?
+
+      origins = cors_allowed_origins == "*" ? [ "*" ] : Array(cors_allowed_origins)
+      return "*" if origins.any? { |entry| entry.to_s.strip == "*" }
+
+      normalized_request_origin = normalize_origin(raw_origin)
+      return nil unless normalized_request_origin
+
+      matched = origins.any? { |entry| normalize_origin(entry.to_s) == normalized_request_origin }
+      matched ? raw_origin : nil
+    end
+
     def inspect
       masked_secret = user_hash_secret ? "[REDACTED]" : "nil"
+      masked_dsn = safe_inspect_dsn(frontend_dsn)
       "#<#{self.class.name} enabled=#{enabled.inspect} deployment_environment=#{deployment_environment.inspect} " \
+        "frontend_dsn=#{masked_dsn.inspect} cors_allowed_origins=#{cors_allowed_origins.inspect} " \
         "retention_period=#{retention_period.inspect} " \
         "max_envelope_size=#{max_envelope_size.inspect} max_stack_frames=#{max_stack_frames.inspect} " \
         "max_breadcrumbs=#{max_breadcrumbs.inspect} max_tags=#{max_tags.inspect} " \
@@ -148,6 +171,58 @@ module Sentrace
     end
 
     private
+      def validate_frontend_settings!
+        unless frontend_dsn.nil? || frontend_dsn.to_s.strip.empty?
+          Dsn.parse(frontend_dsn.to_s)
+        end
+
+        unless release.nil? || release.is_a?(String) || release.is_a?(Symbol)
+          raise ConfigurationError, "release must be a String, Symbol, or nil"
+        end
+
+        validate_cors_allowed_origins!
+      rescue InvalidDsnError => e
+        raise ConfigurationError, "frontend_dsn is invalid: #{e.message}"
+      end
+
+      def validate_cors_allowed_origins!
+        if cors_allowed_origins == "*"
+          return
+        end
+
+        unless cors_allowed_origins.is_a?(Array) && cors_allowed_origins.all? { |o| o.is_a?(String) }
+          raise ConfigurationError, "cors_allowed_origins must be '*' or an Array of origin Strings"
+        end
+
+        cors_allowed_origins.each do |entry|
+          stripped = entry.strip
+          next if stripped == "*"
+
+          if normalize_origin(stripped).nil?
+            raise ConfigurationError, "cors_allowed_origins entry #{entry.inspect} must be '*' or a valid http(s) origin"
+          end
+        end
+      end
+
+      def normalize_origin(raw)
+        uri = URI.parse(raw.strip)
+        return nil unless uri.is_a?(URI::HTTP) && uri.host && !uri.host.empty?
+        return nil if uri.userinfo || (uri.path && !uri.path.empty? && uri.path != "/") || uri.query || uri.fragment
+
+        default_port = uri.scheme == "https" ? 443 : 80
+        port_part = uri.port && uri.port != default_port ? ":#{uri.port}" : ""
+        "#{uri.scheme.downcase}://#{uri.host.downcase}#{port_part}"
+      rescue URI::InvalidURIError
+        nil
+      end
+
+      def safe_inspect_dsn(raw_dsn)
+        return nil if raw_dsn.nil?
+
+        Dsn.parse(raw_dsn.to_s).without_secret.to_s
+      rescue InvalidDsnError
+        "[INVALID_DSN]"
+      end
       def default_deployment_environment
         if defined?(Rails) && Rails.respond_to?(:env) && !Rails.env.to_s.empty?
           Rails.env.to_s

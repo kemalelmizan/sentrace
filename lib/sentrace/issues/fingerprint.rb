@@ -9,6 +9,10 @@ module Sentrace
       GEM_PATH_REGEX = %r{(?:\A|/)gems/([^/]+?)(?:-\d[\w.-]*)?/(.+)\z}
       RELEASE_PATH_REGEX = %r{(?:\A|/)(?:releases/[^/]+|current)/(.+)\z}
       APP_ROOT_SUBDIR_REGEX = %r{(?:\A|/)((?:app|config|db|lib)/.+)\z}
+      HTTP_ORIGIN_REGEX = %r{\A(?:https?|file)://[^/]+}i
+      BUNDLER_SCHEME_REGEX = %r{\A(?:webpack(?:-internal)?|vite|turbopack):///*}i
+      JS_ASSET_DIGEST_REGEX = /[-.](?:[0-9a-f]{8,64}|(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{8,32})(?:\.digested)?(?=\.(?:m?js|cjs|jsx|tsx?|map)\z)/i
+      ANONYMOUS_FUNCTION_NAMES = [ "?", "<anonymous>" ].freeze
 
       OBJECT_ADDRESS_REGEX = /0x[0-9a-f]{6,}/i
       ISO_TIMESTAMP_REGEX = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/
@@ -24,7 +28,17 @@ module Sentrace
         def normalize_filename(raw_filename)
           return "" if raw_filename.nil?
 
-          cleaned = raw_filename.to_s.tr("\\", "/").strip.gsub(%r{/+}, "/")
+          cleaned = raw_filename.to_s.strip
+          return "" if cleaned.empty?
+
+          cleaned = cleaned
+            .sub(HTTP_ORIGIN_REGEX, "")
+            .sub(BUNDLER_SCHEME_REGEX, "")
+            .sub(/[?#].*\z/, "")
+            .tr("\\", "/")
+            .gsub(%r{/+}, "/")
+            .sub(%r{\A(?:\./)+}, "")
+            .sub(JS_ASSET_DIGEST_REGEX, "")
           return "" if cleaned.empty?
 
           if (gem_match = cleaned.match(GEM_PATH_REGEX))
@@ -129,6 +143,8 @@ module Sentrace
           func = normalize_function(frame["function"])
           if !func.empty?
             "#{file}:#{func}"
+          elsif frame["lineno"] && frame["colno"]
+            "#{file}:line:#{frame["lineno"]}:col:#{frame["colno"]}"
           elsif frame["lineno"]
             "#{file}:line:#{frame["lineno"]}"
           else
@@ -139,10 +155,11 @@ module Sentrace
         def normalize_function(raw_function)
           return "" if raw_function.nil?
 
-          raw_function.to_s
+          cleaned = raw_function.to_s
             .gsub(OBJECT_ADDRESS_REGEX, "<hex>")
             .gsub(/\s+/, " ")
             .strip
+          ANONYMOUS_FUNCTION_NAMES.include?(cleaned) ? "" : cleaned
         end
 
         def extract_event_data(normalized_event)

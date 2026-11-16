@@ -23,6 +23,7 @@ module Sentrace
       )
 
       EVENT_ID_HEX = /\A[0-9a-f]{32}\z/
+      SAFE_REQUEST_ID_REGEX = /\A[A-Za-z0-9._:-]{1,128}\z/
       ISSUE_MESSAGE_MAX_CHARS = 1024
 
       LEVEL_MAP = {
@@ -73,13 +74,16 @@ module Sentrace
         summary_source = exception_data ? exception_data["value"] : message
         issue_message = truncate_chars(summary_source, ISSUE_MESSAGE_MAX_CHARS)
 
+        raw_request_hash = raw_event["request"].is_a?(Hash) ? raw_event["request"] : nil
+        tags = extract_tags(raw_event["tags"], raw_request: raw_request_hash)
+
         event_data = {
           "exception" => exception_data,
           "message" => message,
           "request" => nil,
           "breadcrumbs" => extract_breadcrumbs(raw_event["breadcrumbs"]),
-          "tags" => extract_tags(raw_event["tags"]),
-          "contexts" => extract_contexts(raw_event["contexts"]),
+          "tags" => tags,
+          "contexts" => extract_contexts(raw_event["contexts"], raw_event["extra"]),
           "user" => nil
         }
 
@@ -98,7 +102,7 @@ module Sentrace
           fingerprint: extract_fingerprint(raw_event["fingerprint"]),
           event_data: event_data,
           raw_user: raw_event["user"].is_a?(Hash) ? raw_event["user"] : nil,
-          raw_request: raw_event["request"].is_a?(Hash) ? raw_event["request"] : nil
+          raw_request: raw_request_hash
         )
       end
 
@@ -180,6 +184,7 @@ module Sentrace
               "filename" => truncate_chars(frame["filename"] || frame["abs_path"], 512),
               "function" => truncate_chars(frame["function"], 255),
               "lineno" => frame["lineno"].is_a?(Integer) ? frame["lineno"] : nil,
+              "colno" => frame["colno"].is_a?(Integer) ? frame["colno"] : nil,
               "in_app" => frame["in_app"] == true
             }.compact
           end
@@ -233,7 +238,7 @@ module Sentrace
           end
         end
 
-        def extract_tags(raw_tags)
+        def extract_tags(raw_tags, raw_request: nil)
           pairs =
             case raw_tags
             when Hash
@@ -244,7 +249,7 @@ module Sentrace
               []
             end
 
-          pairs.first(@config.max_tags).each_with_object({}) do |(raw_key, raw_val), acc|
+          tags = pairs.first(@config.max_tags).each_with_object({}) do |(raw_key, raw_val), acc|
             next if raw_key.nil?
 
             key = self.class.truncate_utf8_bytes(raw_key.to_s.strip, @config.max_tag_key_bytes)
@@ -252,13 +257,46 @@ module Sentrace
 
             acc[key] = raw_val.nil? ? nil : self.class.truncate_utf8_bytes(raw_val.to_s, @config.max_tag_value_bytes)
           end
+
+          header_request_id = extract_safe_request_id(raw_request)
+          if header_request_id && !tags.key?("request_id") && tags.size < @config.max_tags && "request_id".bytesize <= @config.max_tag_key_bytes
+            tags["request_id"] = self.class.truncate_utf8_bytes(header_request_id, @config.max_tag_value_bytes)
+          end
+
+          tags
         end
 
-        def extract_contexts(raw_contexts)
-          return {} unless raw_contexts.is_a?(Hash)
+        def extract_safe_request_id(raw_request)
+          return nil unless raw_request.is_a?(Hash)
+
+          candidate = nil
+          headers = raw_request["headers"]
+          case headers
+          when Hash
+            _, candidate = headers.find { |k, _| k.to_s.casecmp("x-request-id").zero? }
+          when Array
+            pair = headers.find { |item| item.is_a?(Array) && item.first.to_s.casecmp("x-request-id").zero? }
+            candidate = pair[1] if pair
+          end
+
+          if candidate.nil? && raw_request["env"].is_a?(Hash)
+            env_hash = raw_request["env"]
+            candidate = env_hash["action_dispatch.request_id"] || env_hash["HTTP_X_REQUEST_ID"]
+          end
+
+          str = candidate.to_s.strip
+          str.match?(SAFE_REQUEST_ID_REGEX) ? str : nil
+        end
+
+        def extract_contexts(raw_contexts, raw_extra = nil)
+          source = raw_contexts.is_a?(Hash) ? raw_contexts.dup : {}
+          if raw_extra.is_a?(Hash) && raw_extra.any? && !source.key?("extra") && !source.key?(:extra)
+            source["extra"] = raw_extra
+          end
+          return {} if source.empty?
 
           bounded = {}
-          raw_contexts.each do |ctx_key, ctx_val|
+          source.each do |ctx_key, ctx_val|
             break if bounded.size >= @config.max_context_entries
             next unless ctx_val.is_a?(Hash)
 
