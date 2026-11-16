@@ -2,7 +2,7 @@
 
 ## 1. Batch Event & Orphan Issue Retention
 
-- [ ] 1.1 Add `retention_batch_size` and `internal_authenticator` to `Sentrace::Configuration`, implement `Sentrace::Retention::Cleaner` (`lib/sentrace/retention/cleaner.rb`), `Sentrace::RetentionCleanupJob` (`app/jobs/sentrace/retention_cleanup_job.rb`), and Rake task `sentrace:retention:cleanup` (`lib/tasks/sentrace_retention.rake`), and verify unit and job/rake specs pass
+- [x] 1.1 Add `retention_batch_size` and `internal_authenticator` to `Sentrace::Configuration`, implement `Sentrace::Retention::Cleaner` (`lib/sentrace/retention/cleaner.rb`), `Sentrace::RetentionCleanupJob` (`app/jobs/sentrace/retention_cleanup_job.rb`), and Rake task `sentrace:retention:cleanup` (`lib/tasks/sentrace_retention.rake`), and verify unit and job/rake specs pass
 
 ## 2. PostgreSQL Storage Observability & Internal Admin API
 

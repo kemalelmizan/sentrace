@@ -11,6 +11,8 @@ RSpec.describe Sentrace::Configuration do
       expect(config.deployment_environment).to eq("test")
       expect(config.retention_period).to eq(30.days)
       expect(config.orphan_issue_retention_period).to eq(7.days)
+      expect(config.retention_batch_size).to eq(1_000)
+      expect(config.internal_authenticator).to be_nil
       expect(config.max_envelope_size).to eq(1.megabyte)
       expect(config.max_message_bytes).to eq(4.kilobytes)
       expect(config.max_stack_frames).to eq(50)
@@ -61,6 +63,26 @@ RSpec.describe Sentrace::Configuration do
       expect {
         Sentrace.configure { |config| config.deployment_environment = "   " }
       }.to raise_error(Sentrace::ConfigurationError, /deployment_environment must be a non-empty/)
+    end
+
+    it "validates retention_batch_size and internal_authenticator" do
+      auth_proc = ->(_req) { true }
+      Sentrace.configure do |config|
+        config.retention_batch_size = 500
+        config.internal_authenticator = auth_proc
+      end
+      expect(Sentrace.configuration.retention_batch_size).to eq(500)
+      expect(Sentrace.configuration.internal_authenticator).to eq(auth_proc)
+
+      expect {
+        Sentrace.configure { |config| config.retention_batch_size = 0 }
+      }.to raise_error(Sentrace::ConfigurationError, /retention_batch_size must be a positive Integer/)
+
+      Sentrace.reset_configuration!
+
+      expect {
+        Sentrace.configure { |config| config.internal_authenticator = "invalid" }
+      }.to raise_error(Sentrace::ConfigurationError, /internal_authenticator must respond to #call/)
     end
 
     it "rejects non-positive numeric limits" do

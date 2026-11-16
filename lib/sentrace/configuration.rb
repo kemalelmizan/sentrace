@@ -41,6 +41,7 @@ module Sentrace
       :deployment_environment,
       :retention_period,
       :orphan_issue_retention_period,
+      :retention_batch_size,
       :max_envelope_size,
       :max_message_bytes,
       :max_stack_frames,
@@ -52,6 +53,7 @@ module Sentrace
       :max_context_bytes,
       :redact_fields,
       :sanitizer,
+      :internal_authenticator,
       :user_hash_secret,
       :remote_timeout
 
@@ -62,6 +64,7 @@ module Sentrace
       @deployment_environment = default_deployment_environment
       @retention_period = 30.days
       @orphan_issue_retention_period = 7.days
+      @retention_batch_size = 1_000
       @max_envelope_size = 1.megabyte
       @max_message_bytes = 4.kilobytes
       @max_stack_frames = 50
@@ -73,6 +76,7 @@ module Sentrace
       @max_context_bytes = 8.kilobytes
       @redact_fields = DEFAULT_REDACT_FIELDS.dup
       @sanitizer = nil
+      @internal_authenticator = nil
       @user_hash_secret = nil
       @remote_timeout = 5.0
       self.environments = { local: { transport: :local } }
@@ -114,8 +118,16 @@ module Sentrace
         raise ConfigurationError, "redact_fields must be an Array of field names"
       end
 
+      unless retention_batch_size.is_a?(Integer) && retention_batch_size.positive?
+        raise ConfigurationError, "retention_batch_size must be a positive Integer (got #{retention_batch_size.inspect})"
+      end
+
       if !sanitizer.nil? && !sanitizer.respond_to?(:call)
         raise ConfigurationError, "sanitizer must respond to #call"
+      end
+
+      if !internal_authenticator.nil? && !internal_authenticator.respond_to?(:call)
+        raise ConfigurationError, "internal_authenticator must respond to #call"
       end
 
       if deployment_environment.nil? || deployment_environment.to_s.strip.empty?
