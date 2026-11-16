@@ -6,7 +6,7 @@
 
 ## 2. Remote Streamable HTTP Endpoint (`/sentrace/mcp`)
 
-- [ ] 2.1 Add `deployment_environment` to `Sentrace::Configuration` and mount `POST /mcp` (`config/routes.rb`, `app/controllers/sentrace/mcp_controller.rb`) using `MCP::Server::Transports::StreamableHTTPTransport` with non-loopback HTTPS enforcement (`403`), constant-time bearer token verification (`401`), ingestion-DSN rejection (`401`), and node-local query scoping, and verify request specs pass
+- [x] 2.1 Add `deployment_environment` to `Sentrace::Configuration` and mount `POST /mcp` (`config/routes.rb`, `app/controllers/sentrace/mcp_controller.rb`) using `MCP::Server::Transports::StreamableHTTPTransport` with non-loopback HTTPS enforcement (`403`), constant-time bearer token verification (`401`), ingestion-DSN rejection (`401`), and node-local query scoping, and verify request specs pass
 
 ## 3. Remote HTTP Client, Concurrent EnvironmentRouter & Federation Specs
 

@@ -38,6 +38,7 @@ module Sentrace
     end
 
     attr_accessor :enabled,
+      :deployment_environment,
       :retention_period,
       :orphan_issue_retention_period,
       :max_envelope_size,
@@ -58,6 +59,7 @@ module Sentrace
 
     def initialize
       @enabled = true
+      @deployment_environment = default_deployment_environment
       @retention_period = 30.days
       @orphan_issue_retention_period = 7.days
       @max_envelope_size = 1.megabyte
@@ -116,19 +118,31 @@ module Sentrace
         raise ConfigurationError, "sanitizer must respond to #call"
       end
 
+      if deployment_environment.nil? || deployment_environment.to_s.strip.empty?
+        raise ConfigurationError, "deployment_environment must be a non-empty String or Symbol"
+      end
+
       validate_environments!
       true
     end
 
     def inspect
       masked_secret = user_hash_secret ? "[REDACTED]" : "nil"
-      "#<#{self.class.name} enabled=#{enabled.inspect} retention_period=#{retention_period.inspect} " \
+      "#<#{self.class.name} enabled=#{enabled.inspect} deployment_environment=#{deployment_environment.inspect} " \
+        "retention_period=#{retention_period.inspect} " \
         "max_envelope_size=#{max_envelope_size.inspect} max_stack_frames=#{max_stack_frames.inspect} " \
         "max_breadcrumbs=#{max_breadcrumbs.inspect} max_tags=#{max_tags.inspect} " \
         "user_hash_secret=#{masked_secret} environments=#{environments.inspect}>"
     end
 
     private
+      def default_deployment_environment
+        if defined?(Rails) && Rails.respond_to?(:env) && !Rails.env.to_s.empty?
+          Rails.env.to_s
+        else
+          "local"
+        end
+      end
       def validate_environments!
         unless environments.is_a?(Hash) && environments.any?
           raise ConfigurationError, "environments must be a non-empty Hash"

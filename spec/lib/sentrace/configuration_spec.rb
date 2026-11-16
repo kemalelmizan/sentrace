@@ -8,6 +8,7 @@ RSpec.describe Sentrace::Configuration do
 
     it "applies SPEC.md payload, retention, and privacy defaults" do
       expect(config.enabled).to be(true)
+      expect(config.deployment_environment).to eq("test")
       expect(config.retention_period).to eq(30.days)
       expect(config.orphan_issue_retention_period).to eq(7.days)
       expect(config.max_envelope_size).to eq(1.megabyte)
@@ -51,6 +52,15 @@ RSpec.describe Sentrace::Configuration do
       expect {
         Sentrace.configure { |config| config.sanitizer = "not_callable" }
       }.to raise_error(Sentrace::ConfigurationError, /sanitizer must respond to #call/)
+    end
+
+    it "validates deployment_environment is non-blank" do
+      Sentrace.configure { |config| config.deployment_environment = "staging-eu" }
+      expect(Sentrace.configuration.deployment_environment).to eq("staging-eu")
+
+      expect {
+        Sentrace.configure { |config| config.deployment_environment = "   " }
+      }.to raise_error(Sentrace::ConfigurationError, /deployment_environment must be a non-empty/)
     end
 
     it "rejects non-positive numeric limits" do
