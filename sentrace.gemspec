@@ -4,6 +4,7 @@ Gem::Specification.new do |spec|
   spec.name        = "sentrace"
   spec.version     = Sentrace::VERSION
   spec.authors     = [ "Kemal Elmizan" ]
+  spec.email       = [ "kemalelmizan@gmail.com" ]
   spec.summary     = "Sentry-compatible error tracking for Rails, with a federated MCP interface."
   spec.description = "Self-hosted, PostgreSQL-backed Sentry envelope ingestion and issue grouping for Ruby on Rails applications, exposed via federated Model Context Protocol (MCP) transports."
   spec.homepage    = "https://github.com/kemalelmizan/sentrace"
@@ -15,7 +16,7 @@ Gem::Specification.new do |spec|
   spec.metadata["rubygems_mfa_required"] = "true"
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir["{app,config,db,lib}/**/*", "LICENSE.txt", "Rakefile", "README.md"]
+    Dir["{app,config,db,lib}/**/*", "LICENSE.txt", "README.md"]
   end
 
   spec.add_dependency "mcp", "~> 1.0"
