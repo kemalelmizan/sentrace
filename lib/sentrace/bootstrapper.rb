@@ -22,7 +22,9 @@ module Sentrace
         project, key = Project.ensure!(slug: slug, name: project_name, public_key: public_key)
         dsn = Dsn.build(base_url: base_url, public_key: key.public_key, project_id: project.id)
         @io.puts "Sentrace project '#{project.slug}' (id=#{project.id}) ready."
+        @io.puts "SENTRACE_FRONTEND_DSN=#{dsn}"
         @io.puts "SENTRY_DSN=#{dsn}"
+        @io.puts "# Note: Explicit DSN env vars above are optional overrides for cross-origin frontends or legacy sentry-ruby."
       end
 
       token_record = nil

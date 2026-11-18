@@ -132,6 +132,7 @@ module Sentrace
 
       def clear_cache!
         @project_cache_mutex.synchronize { @project_cache.clear }
+        FrontendDsnResolver.clear_cache! if defined?(FrontendDsnResolver)
       end
 
       def exception_excluded?(exception, config: Sentrace.configuration)

@@ -14,6 +14,8 @@ import SentraceDefault, {
   close,
   getConfig,
   init,
+  isEnabled,
+  lastEventId,
   resetClient,
   withScope
 } from "../dist/index.mjs";
@@ -24,17 +26,19 @@ const repoRoot = path.resolve(pkgRoot, "../..");
 const require = createRequire(import.meta.url);
 const SentraceCjs = require("../dist/index.cjs");
 
-test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-end", async () => {
+test("ESM dist/index.mjs exports 0.1.2 and delivers Sentry v7 envelopes end-to-end", async () => {
   resetClient();
-  assert.equal(VERSION, "0.1.1");
-  assert.equal(SentraceDefault.VERSION, "0.1.1");
+  assert.equal(VERSION, "0.1.2");
+  assert.equal(SentraceDefault.VERSION, "0.1.2");
   assert.equal(getConfig(), null);
+  assert.equal(isEnabled(), false);
+  assert.equal(lastEventId(), undefined);
 
   const delivered = [];
   const cfg = init({
     dsn: "https://pub123@errors.example.com/sentrace/1",
     environment: "staging",
-    release: "v0.1.1",
+    release: "v0.1.2",
     autoInstrumentBrowser: false,
     railsIntegration: false,
     transport: () => ({
@@ -49,6 +53,7 @@ test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-e
   assert.equal(cfg.dsn, "https://pub123@errors.example.com/sentrace/1");
   assert.equal(cfg.environment, "staging");
   assert.equal(getConfig(), cfg);
+  assert.equal(isEnabled(), true);
 
   addBreadcrumb({ category: "ui.click", message: "button#buy" });
   const id = withScope((scope) => {
@@ -56,7 +61,9 @@ test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-e
     return captureException(new Error("Card declined"));
   });
   assert.match(id, /^[0-9a-f]{32}$/);
-  captureMessage("Heads up", "warning");
+  assert.equal(lastEventId(), id);
+  const msgId = captureMessage("Heads up", "warning");
+  assert.equal(lastEventId(), msgId);
 
   assert.equal(delivered.length, 2);
   const firstPayload = JSON.parse(delivered[0].trimEnd().split("\n")[2]);
@@ -66,6 +73,8 @@ test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-e
 
   await close();
   assert.equal(getConfig(), null);
+  assert.equal(isEnabled(), false);
+  assert.equal(lastEventId(), undefined);
 
   const allowDelivered = [];
   init({
@@ -97,8 +106,10 @@ test("ESM dist/index.mjs exports 0.1.1 and delivers Sentry v7 envelopes end-to-e
 
 test("CommonJS dist/index.cjs exports matching API", async () => {
   SentraceCjs.resetClient();
-  assert.equal(SentraceCjs.VERSION, "0.1.1");
-  assert.equal(SentraceCjs.default.VERSION, "0.1.1");
+  assert.equal(SentraceCjs.VERSION, "0.1.2");
+  assert.equal(SentraceCjs.default.VERSION, "0.1.2");
+  assert.equal(SentraceCjs.isEnabled(), false);
+  assert.equal(SentraceCjs.lastEventId(), undefined);
 
   const cfg = SentraceCjs.init({
     dsn: "http://pub@localhost:3000/sentrace/1",
@@ -107,7 +118,9 @@ test("CommonJS dist/index.cjs exports matching API", async () => {
     railsIntegration: false
   });
   assert.equal(cfg.release, "v1.0.0");
+  assert.equal(SentraceCjs.isEnabled(), true);
   await SentraceCjs.close();
+  assert.equal(SentraceCjs.isEnabled(), false);
 });
 
 test("IIFE dist/sentrace.browser.js attaches window.Sentrace cleanly and matches synced Rails engine assets", () => {
@@ -147,7 +160,8 @@ test("IIFE dist/sentrace.browser.js attaches window.Sentrace cleanly and matches
 
   vm.runInNewContext(browserCode, sandbox);
   assert.ok(sandbox.Sentrace);
-  assert.equal(sandbox.Sentrace.VERSION, "0.1.1");
+  assert.equal(sandbox.Sentrace.VERSION, "0.1.2");
+  assert.equal(sandbox.Sentrace.isEnabled(), false);
 
   const envelopes = [];
   sandbox.Sentrace.init({
@@ -162,7 +176,9 @@ test("IIFE dist/sentrace.browser.js attaches window.Sentrace cleanly and matches
       flush: async () => true
     })
   });
+  assert.equal(sandbox.Sentrace.isEnabled(), true);
   const evId = sandbox.Sentrace.captureMessage("Hello from IIFE");
   assert.match(evId, /^[0-9a-f]{32}$/);
+  assert.equal(sandbox.Sentrace.lastEventId(), evId);
   assert.equal(envelopes.length, 1);
 });

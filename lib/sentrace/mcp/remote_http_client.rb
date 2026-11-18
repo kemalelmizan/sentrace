@@ -47,8 +47,8 @@ module Sentrace
         unwrap_tool_response!(env_def, response)
       end
 
-      def environment_status(env_def)
-        return "unconfigured" if env_def.url.to_s.strip.empty?
+      def environment_status(env_def, timeout: nil)
+        return "unconfigured" if unconfigured_http_environment?(env_def)
 
         body = JSON.generate(
           jsonrpc: "2.0",
@@ -56,7 +56,7 @@ module Sentrace
           method: "ping",
           params: {}
         )
-        response = post_json_rpc(env_def, body)
+        response = post_json_rpc(env_def, body, timeout: timeout)
 
         case response.status
         when 200..299
@@ -74,17 +74,23 @@ module Sentrace
       end
 
       private
-        def post_json_rpc(env_def, body)
+        def unconfigured_http_environment?(env_def)
+          env_def.url.to_s.strip.empty? || env_def.token.to_s.strip.empty?
+        end
+
+        def post_json_rpc(env_def, body, timeout: nil)
           uri = validate_endpoint!(env_def)
           headers = build_headers(env_def)
-          timeout = env_def.timeout
+          effective_timeout = timeout || env_def.timeout
 
-          @http_requester.call(uri: uri, headers: headers, body: body, timeout: timeout)
+          run_with_deadline(effective_timeout) do
+            @http_requester.call(uri: uri, headers: headers, body: body, timeout: effective_timeout)
+          end
         rescue McpError
           raise
         rescue Timeout::Error
           raise McpRemoteError.new(
-            "Timed out after #{env_def.timeout}s querying environment #{env_def.name}",
+            "Timed out after #{effective_timeout}s querying environment #{env_def.name}",
             environment: env_def.name,
             category: "timeout"
           )
@@ -96,13 +102,29 @@ module Sentrace
           )
         end
 
+        def run_with_deadline(timeout)
+          worker = Thread.new do
+            Thread.current.report_on_exception = false
+            begin
+              yield
+            ensure
+              ActiveRecord::Base.connection_handler.clear_active_connections! if defined?(ActiveRecord::Base)
+            end
+          end
+
+          return worker.value if worker.join(timeout)
+
+          worker.kill
+          raise Timeout::Error, "execution expired"
+        end
+
         def validate_endpoint!(env_def)
           raw_url = env_def.url.to_s.strip
-          if raw_url.empty?
+          if raw_url.empty? || env_def.token.to_s.strip.empty?
             raise McpRemoteError.new(
-              "Missing MCP endpoint URL for environment #{env_def.name}",
+              "Remote MCP URL or bearer token is not configured for environment #{env_def.name}",
               environment: env_def.name,
-              category: "invalid_endpoint"
+              category: "unconfigured"
             )
           end
 
@@ -294,11 +316,13 @@ module Sentrace
           http.open_timeout = timeout
           http.read_timeout = timeout
           http.write_timeout = timeout if http.respond_to?(:write_timeout=)
+          http.ssl_timeout = timeout if http.respond_to?(:ssl_timeout=)
+          http.max_retries = 0 if http.respond_to?(:max_retries=)
 
           request = Net::HTTP::Post.new(uri.request_uri, headers)
           request.body = body
 
-          response = http.request(request)
+          response = http.start { |conn| conn.request(request) }
           HttpResponse.new(
             status: response.code.to_i,
             headers: response.each_header.to_h,

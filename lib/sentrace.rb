@@ -31,7 +31,9 @@ require "sentrace/mcp/environment_router"
 require "sentrace/mcp/dispatcher"
 require "sentrace/mcp/server"
 require "sentrace/mcp/stdio_runner"
+require "sentrace/frontend_dsn_resolver"
 require "sentrace/view_helpers"
+require "sentrace/test_helpers"
 require "sentrace/engine"
 
 module Sentrace
@@ -52,8 +54,53 @@ module Sentrace
 
     def reset_configuration!
       CaptureDispatcher.clear_cache!
+      FrontendDsnResolver.clear_cache!
       Breadcrumbs.reset! if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:reset!)
       @configuration = Configuration.new
+    end
+
+    def with_configuration(**overrides)
+      raise ArgumentError, "Sentrace.with_configuration requires a block" unless block_given?
+
+      previous_config = configuration.dup
+      previous_stack = Thread.current[Scope::SCOPE_STACK_KEY]&.map(&:deep_clone)
+      begin
+        isolated_config = previous_config.dup
+        overrides.each do |key, value|
+          setter = :"#{key}="
+          unless isolated_config.respond_to?(setter)
+            raise ConfigurationError, "Unknown configuration attribute #{key.inspect}"
+          end
+          isolated_config.public_send(setter, value)
+        end
+        isolated_config.validate!
+        @configuration = isolated_config
+        CaptureDispatcher.clear_cache!
+        FrontendDsnResolver.clear_cache!
+        Integrations::ExceptionDeduplicator.reset!
+        Scope.clear!
+        Breadcrumbs.apply_configuration!(isolated_config) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
+        yield(isolated_config)
+      ensure
+        @configuration = previous_config
+        CaptureDispatcher.clear_cache!
+        FrontendDsnResolver.clear_cache!
+        Integrations::ExceptionDeduplicator.reset!
+        if previous_stack
+          Thread.current[Scope::SCOPE_STACK_KEY] = previous_stack
+        else
+          Scope.clear!
+        end
+        Breadcrumbs.apply_configuration!(previous_config) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
+      end
+    end
+
+    def resolve_frontend_dsn(base_url:, project: nil)
+      FrontendDsnResolver.resolve(base_url: base_url, project: project)
+    end
+
+    def frontend_dsn(base_url: nil, request: nil, project: nil)
+      FrontendDsnResolver.resolve(base_url: base_url, request: request, project: project)
     end
 
     def current_scope

@@ -1,15 +1,16 @@
 Sentrace.configure do |config|
-  config.enabled = ENV.fetch("SENTRACE_ENABLED", "true") == "true"
+  config.enabled = ENV.fetch("SENTRACE_ENABLED", (!Rails.env.test?).to_s) == "true"
 
-  # Native in-process Ruby backend error capture (Rack/Rails, Sidekiq, ActiveJob — no sentry-ruby needed):
-  # config.project_slug = ENV.fetch("SENTRACE_PROJECT_SLUG", nil)
+  # Native in-process Ruby backend error capture (Rack/Rails, Sidekiq, ActiveJob)
+  # AND automatic same-origin public DSN resolution for `<%%= sentrace_meta_tags %>`:
+  config.project_slug = ENV.fetch("SENTRACE_PROJECT_SLUG", "<%= default_project_slug %>")
   # config.breadcrumbs_logger = %i[active_support_logger http_logger]
   # config.sample_rate = 1.0
   # config.async_queue_size = 256
 
-  # Public DSN rendered by `sentrace_meta_tags` for frontend JavaScript error capture:
+  # Optional explicit public DSN override (only needed for cross-origin SPAs or CDN hosts):
   # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
-  # config.release = ENV["APP_RELEASE"]
+  config.release = ENV["APP_RELEASE"]
   # config.cors_allowed_origins = []
 
   config.retention_period = 30.days
@@ -33,6 +34,8 @@ Sentrace.configure do |config|
   # Retain specific non-secret user scalar fields alongside `user.id_hash` (internal apps):
   # config.retain_user_fields = %w[id email username name]
 
+  # Remote `:http` entries whose URL or token env vars are unset safely report `"unconfigured"`
+  # instead of failing Rails boot (`db:migrate`, `assets:precompile`, `rspec`, `console`).
   config.environments = {
     local: {
       transport: :local

@@ -103,6 +103,17 @@ export class Scope implements ScopeLike {
     return this;
   }
 
+  trimBreadcrumbs(maxBreadcrumbs: number): this {
+    if (maxBreadcrumbs <= 0) {
+      this.breadcrumbs = [];
+      return this;
+    }
+    if (this.breadcrumbs.length > maxBreadcrumbs) {
+      this.breadcrumbs.splice(0, this.breadcrumbs.length - maxBreadcrumbs);
+    }
+    return this;
+  }
+
   clear(): this {
     this.tags = {};
     this.user = null;

@@ -387,3 +387,191 @@ test("XMLHttpRequest instrumentation survives getResponseHeader throwing on abor
     Sentrace.resetClient();
   }
 });
+
+test("isEnabled() and lastEventId() reflect client lifecycle and ignore filtered or dropped events", async () => {
+  Sentrace.resetClient();
+  const mem = createMemoryTransport();
+
+  assert.equal(Sentrace.isInitialized(), false);
+  assert.equal(Sentrace.isEnabled(), false);
+  assert.equal(Sentrace.lastEventId(), undefined);
+
+  // Disabled client -> isEnabled() === false, captures do not update lastEventId()
+  Sentrace.init({
+    dsn: "https://pub123@errors.example.com/sentrace/9",
+    enabled: false,
+    autoInstrumentBrowser: false,
+    railsIntegration: false,
+    transport: mem.factory
+  });
+  assert.equal(Sentrace.isInitialized(), true);
+  assert.equal(Sentrace.isEnabled(), false);
+  Sentrace.captureException(new Error("While disabled"));
+  assert.equal(Sentrace.lastEventId(), undefined);
+
+  // Missing/invalid DSN -> isEnabled() === false
+  Sentrace.init({
+    dsn: "",
+    enabled: true,
+    autoInstrumentBrowser: false,
+    railsIntegration: false,
+    transport: mem.factory
+  });
+  assert.equal(Sentrace.isEnabled(), false);
+
+  // Re-init with valid DSN + enabled: true
+  Sentrace.init({
+    dsn: "https://pub123@errors.example.com/sentrace/9",
+    enabled: true,
+    autoInstrumentBrowser: false,
+    railsIntegration: false,
+    ignoreErrors: [/IgnoredNoise/],
+    beforeSend(ev) {
+      return ev.tags?.drop === "true" ? null : ev;
+    },
+    transport: mem.factory
+  });
+  assert.equal(Sentrace.isEnabled(), true);
+
+  const acceptedId = Sentrace.captureException(new Error("Accepted failure"));
+  assert.match(acceptedId, /^[0-9a-f]{32}$/);
+  assert.equal(Sentrace.lastEventId(), acceptedId);
+
+  // Subsequent dropped/ignored events MUST NOT overwrite lastEventId()
+  Sentrace.captureException(new Error("IgnoredNoise warning"));
+  Sentrace.captureMessage("Dropped by beforeSend", { tags: { drop: "true" } });
+  assert.equal(Sentrace.lastEventId(), acceptedId);
+  assert.equal(mem.envelopes.length, 1);
+
+  await Sentrace.close();
+  assert.equal(Sentrace.isEnabled(), false);
+  assert.equal(Sentrace.lastEventId(), undefined);
+});
+
+test("Calling Sentrace.init() multiple times updates options, preserves globalScope, and survives third-party fetch/XHR/history wrappers without duplicates", async () => {
+  Sentrace.resetClient();
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const prevFetch = globalThis.fetch;
+  const prevXhr = globalThis.XMLHttpRequest;
+
+  const { fakeWindow, fakeDocument } = createFakeBrowserEnv(
+    {},
+    "https://app.example.com/dashboard"
+  );
+  const memA = createMemoryTransport();
+  const memB = createMemoryTransport();
+
+  class FakeXhr {
+    constructor() {
+      this.status = 200;
+      this.listeners = new Map();
+    }
+    open(_method, _url) {}
+    send(_body) {
+      for (const fn of this.listeners.get("loadend") ?? []) {
+        fn();
+      }
+    }
+    addEventListener(type, fn) {
+      const arr = this.listeners.get(type) ?? [];
+      arr.push(fn);
+      this.listeners.set(type, arr);
+    }
+    getResponseHeader() {
+      return null;
+    }
+  }
+
+  try {
+    globalThis.window = fakeWindow;
+    globalThis.document = fakeDocument;
+    globalThis.XMLHttpRequest = FakeXhr;
+    globalThis.fetch = async () => ({ status: 200, headers: { get: () => null } });
+
+    // Pre-init scope data must also survive first init()
+    Sentrace.setTag("boot_phase", "early");
+
+    const clientARef = (() => {
+      Sentrace.init({
+        dsn: "https://pub_a@errors.example.com/sentrace/1",
+        release: "v1",
+        transport: memA.factory
+      });
+      return Sentrace.getClient();
+    })();
+    assert.equal(clientARef.isEnabled(), true);
+
+    Sentrace.setUser({ id: "u-42", email: "dev@example.com" });
+
+    // Simulate third-party libraries wrapping fetch, XMLHttpRequest, and history.pushState AFTER first init()
+    let thirdPartyFetchCalls = 0;
+    const fetchAfterInit1 = globalThis.fetch;
+    globalThis.fetch = function thirdPartyFetch(...args) {
+      thirdPartyFetchCalls += 1;
+      return fetchAfterInit1.apply(this, args);
+    };
+
+    let thirdPartyXhrSendCalls = 0;
+    const xhrSendAfterInit1 = FakeXhr.prototype.send;
+    FakeXhr.prototype.send = function thirdPartyXhrSend(...args) {
+      thirdPartyXhrSendCalls += 1;
+      return xhrSendAfterInit1.apply(this, args);
+    };
+
+    let thirdPartyPushStateCalls = 0;
+    const pushStateAfterInit1 = fakeWindow.history.pushState;
+    fakeWindow.history.pushState = function thirdPartyPushState(...args) {
+      thirdPartyPushStateCalls += 1;
+      return pushStateAfterInit1.apply(this, args);
+    };
+
+    // Second Sentrace.init() after async runtime config arrives
+    Sentrace.init({
+      dsn: "https://pub_b@errors.example.com/sentrace/2",
+      release: "v2",
+      transport: memB.factory
+    });
+
+    assert.equal(clientARef.isEnabled(), false);
+    assert.equal(Sentrace.isEnabled(), true);
+
+    await globalThis.fetch("https://app.example.com/api/ping?token=secret1");
+    const xhr = new FakeXhr();
+    xhr.open("GET", "https://app.example.com/api/xhr-check");
+    xhr.send();
+    fakeWindow.history.pushState({}, "", "/settings");
+    fakeWindow.dispatch("error", { error: new Error("Boom after re-init") });
+
+    // Third-party wrappers must remain intact and execute
+    assert.equal(thirdPartyFetchCalls, 1);
+    assert.equal(thirdPartyXhrSendCalls, 1);
+    assert.equal(thirdPartyPushStateCalls, 1);
+
+    // Zero events sent to first client; exactly one event sent to second client
+    assert.equal(memA.envelopes.length, 0);
+    assert.equal(memB.envelopes.length, 1);
+
+    const ev = memB.envelopes[0].event;
+    assert.equal(memB.envelopes[0].header.dsn, "https://pub_b@errors.example.com/sentrace/2");
+    assert.equal(ev.release, "v2");
+    assert.equal(ev.user.id, "u-42");
+    assert.equal(ev.tags.boot_phase, "early");
+    // Exactly 1 fetch + 1 xhr + 1 navigation breadcrumb (no duplicate instrumentation!)
+    assert.equal(ev.breadcrumbs.values.length, 3);
+    assert.deepEqual(
+      ev.breadcrumbs.values.map((b) => b.category),
+      ["fetch", "xhr", "navigation"]
+    );
+    assert.equal(ev.breadcrumbs.values[0].data.url, "https://app.example.com/api/ping?token=[REDACTED]");
+    assert.equal(Sentrace.lastEventId(), ev.event_id);
+
+    await Sentrace.close();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    globalThis.fetch = prevFetch;
+    globalThis.XMLHttpRequest = prevXhr;
+    Sentrace.resetClient();
+  }
+});

@@ -242,6 +242,7 @@ export declare class Scope implements ScopeLike {
   setFingerprint(fingerprint: string[]): this;
   addBreadcrumb(breadcrumb: Breadcrumb, maxBreadcrumbs?: number): this;
   clearBreadcrumbs(): this;
+  trimBreadcrumbs(maxBreadcrumbs: number): this;
   clear(): this;
   clone(): Scope;
   applyCaptureContext(context?: CaptureContext): this;
@@ -251,6 +252,7 @@ export declare class Scope implements ScopeLike {
 export declare class BrowserClient {
   readonly config: FrozenClientConfig;
   constructor(options: SentraceOptions, scope: Scope);
+  isEnabled(): boolean;
   recordBreadcrumb(breadcrumb: Breadcrumb, scope: Scope): void;
   captureException(error: unknown, scope: Scope, captureContext?: CaptureContext): string;
   captureExceptionWithMeta(
@@ -268,6 +270,7 @@ export declare class BrowserClient {
   captureEvent(partialEvent: Partial<SentryEvent>, scope: Scope, hint?: SentryEventHint): string;
   flush(timeout?: number): Promise<boolean>;
   close(timeout?: number): Promise<boolean>;
+  deactivate(): void;
   teardownInstrumentation(): void;
 }
 
@@ -276,6 +279,8 @@ export declare function initRails(options?: SentraceOptions): FrozenClientConfig
 export declare function getConfig(): FrozenClientConfig | null;
 export declare function getClient(): BrowserClient | undefined;
 export declare function isInitialized(): boolean;
+export declare function isEnabled(): boolean;
+export declare function lastEventId(): string | undefined;
 export declare function getCurrentScope(): Scope;
 export declare function getGlobalScope(): Scope;
 export declare function getIsolationScope(): Scope;
@@ -333,6 +338,8 @@ declare const Sentrace: {
   getConfig: typeof getConfig;
   getClient: typeof getClient;
   isInitialized: typeof isInitialized;
+  isEnabled: typeof isEnabled;
+  lastEventId: typeof lastEventId;
   getCurrentScope: typeof getCurrentScope;
   getGlobalScope: typeof getGlobalScope;
   getIsolationScope: typeof getIsolationScope;

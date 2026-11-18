@@ -4,7 +4,8 @@ Zero-dependency, `@sentry/browser`-compatible frontend error capturing SDK for [
 
 ## Highlights
 
-- **`@sentry/browser`-compatible API**: `init`, `captureException`, `captureMessage`, `captureEvent`, `addBreadcrumb`, `setTag`, `setTags`, `setUser`, `setContext`, `setExtra`, `withScope`, `getCurrentScope`, `flush`, `close`, `beforeSend`, `ignoreErrors`, `denyUrls`, `allowUrls`, `redactFields`, and `allowFields`.
+- **`@sentry/browser`-compatible API**: `init`, `captureException`, `captureMessage`, `captureEvent`, `addBreadcrumb`, `setTag`, `setTags`, `setUser`, `setContext`, `setExtra`, `withScope`, `getCurrentScope`, `isInitialized`, `isEnabled`, `lastEventId`, `flush`, `close`, `beforeSend`, `ignoreErrors`, `denyUrls`, `allowUrls`, `redactFields`, and `allowFields`.
+- **Idempotent `Sentrace.init()`**: Safe to call more than once (for example, zero-arg `Sentrace.init()` at bundle load followed by a second `Sentrace.init({ dsn, release })` after fetching `/api/v1/configs`) — prior listeners and wrappers are cleanly deactivated without duplicating breadcrumbs/captures, clobbering third-party `fetch`/`XMLHttpRequest` wrappers, or clearing `globalScope`.
 - **React `<ErrorBoundary>` (`sentrace/react`)**: Drop-in `@sentry/react`-compatible `ErrorBoundary` and `withErrorBoundary` (`react >= 16.8.0` optional `peerDependency` only) capturing unhandled render/lifecycle errors with `mechanism: { type: "react.error_boundary", handled: false }` and `contexts.react.componentStack`.
 - **Legacy & Modern Toolchain Ready**: Emits pure ES2018/ES2019 bundles (zero ES2020+ syntax tokens) with both `package.json` `"exports"` and a top-level `react/` directory so `@rails/webpacker 5.4` (`webpack 4.46` / Acorn 6), TypeScript `>= 4.4` (`"moduleResolution": "node"`), Webpack 5, and Vite all work out of the box without `node_modules` transpilation.
 - **Standard Sentry v7 Envelopes**: Uses `fetch(..., { keepalive: true })` with `navigator.sendBeacon` unload/offline fallback and parses V8/Chromium, Firefox/SpiderMonkey, and Safari/JavaScriptCore stack traces (`lineno` + `colno`).
@@ -29,12 +30,14 @@ bin/rails generate sentrace:install
 
 ## Full-Stack Ruby on Rails Quickstart
 
-1. Configure `frontend_dsn` in `config/initializers/sentrace.rb`:
+1. Configure `project_slug` in `config/initializers/sentrace.rb` (`<%= sentrace_meta_tags %>` and `Sentrace.frontend_dsn(request: request)` automatically resolve and cache the same-origin public DSN from your active `Sentrace::ProjectKey` with zero extra environment variables; set `config.frontend_dsn` only for cross-origin SPAs or custom public hosts):
 
 ```ruby
 Sentrace.configure do |config|
-  config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"] # e.g. "https://<public_key>@app.example.com/sentrace/1"
+  config.project_slug = "my-app"
   config.release = ENV["APP_RELEASE"]
+  # Optional override for cross-origin SPAs or CDN hosts:
+  # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
 end
 ```
 

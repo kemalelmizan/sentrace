@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
   // --- dsn.ts ---
-  const VERSION = "0.1.1";
+  const VERSION = "0.1.2";
   const SDK_NAME = "sentrace.javascript.browser";
   const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
@@ -474,6 +474,17 @@
       return this;
     }
 
+    trimBreadcrumbs(maxBreadcrumbs        )       {
+      if (maxBreadcrumbs <= 0) {
+        this.breadcrumbs = [];
+        return this;
+      }
+      if (this.breadcrumbs.length > maxBreadcrumbs) {
+        this.breadcrumbs.splice(0, this.breadcrumbs.length - maxBreadcrumbs);
+      }
+      return this;
+    }
+
     clear()       {
       this.tags = {};
       this.user = null;
@@ -770,6 +781,7 @@
   }
 
   function installBrowserInstrumentation(hooks                             )             {
+    let active = true;
     const cleanups                    = [];
     const g = getGlobalObject();
     const win = (g.window !== undefined && g.window !== null ? g.window : g)
@@ -781,6 +793,9 @@
 
     if (win && typeof win.addEventListener === "function" && typeof win.removeEventListener === "function") {
       const errorListener = (rawEvent         )       => {
+        if (!active) {
+          return;
+        }
         const ev = rawEvent
 
                      ;
@@ -807,6 +822,9 @@
       };
 
       const rejectionListener = (rawEvent         )       => {
+        if (!active) {
+          return;
+        }
         const ev = rawEvent                                    ;
         const reason = ev && "reason" in ev ? ev.reason : new Error("Unhandled Promise rejection");
         hooks.onError(reason !== undefined && reason !== null ? reason : new Error("Unhandled Promise rejection"), {
@@ -826,6 +844,9 @@
 
       let lastHref = win.location ? win.location.href : undefined;
       const popstateListener = ()       => {
+        if (!active) {
+          return;
+        }
         const nextHref = win.location ? win.location.href : undefined;
         hooks.onBreadcrumb({
           type: "navigation",
@@ -850,7 +871,10 @@
         for (const methodName of ["pushState", "replaceState"]         ) {
           const original = historyObj[methodName];
           if (typeof original === "function") {
-            historyObj[methodName] = function patchedHistory(...args           )          {
+            const wrappedHistory = function patchedHistory(...args           )          {
+              if (!active) {
+                return original.apply(this, args);
+              }
               const currentLocHref = win.location ? win.location.href : undefined;
               const prev = lastHref !== undefined && lastHref !== null ? lastHref : currentLocHref;
               const result = original.apply(this, args);
@@ -874,8 +898,11 @@
               });
               return result;
             };
+            historyObj[methodName] = wrappedHistory;
             cleanups.push(() => {
-              historyObj[methodName] = original;
+              if (historyObj[methodName] === wrappedHistory) {
+                historyObj[methodName] = original;
+              }
             });
           }
         }
@@ -884,6 +911,9 @@
 
     if (doc && typeof doc.addEventListener === "function" && typeof doc.removeEventListener === "function") {
       const clickListener = (rawEvent         )       => {
+        if (!active) {
+          return;
+        }
         const ev = rawEvent                                    ;
         hooks.onBreadcrumb({
           type: "ui",
@@ -906,7 +936,7 @@
         input                   ,
         init
       )                    {
-        if (init && init[SENTRACE_INTERNAL_FETCH_FLAG]) {
+        if (!active || (init && init[SENTRACE_INTERNAL_FETCH_FLAG])) {
           return originalFetch.call(g, input, init);
         }
 
@@ -935,6 +965,9 @@
 
         return originalFetch.call(g, input, init).then(
           (response) => {
+            if (!active) {
+              return response;
+            }
             let requestId                    ;
             if (response && response.headers && typeof response.headers.get === "function") {
               const rawHeader = response.headers.get("x-request-id");
@@ -960,16 +993,18 @@
             return response;
           },
           (networkErr         ) => {
-            hooks.onBreadcrumb({
-              type: "http",
-              category: "fetch",
-              level: "error",
-              data: {
-                method,
-                url: safeUrl,
-                error: networkErr instanceof Error ? networkErr.name : "NetworkError"
-              }
-            });
+            if (active) {
+              hooks.onBreadcrumb({
+                type: "http",
+                category: "fetch",
+                level: "error",
+                data: {
+                  method,
+                  url: safeUrl,
+                  error: networkErr instanceof Error ? networkErr.name : "NetworkError"
+                }
+              });
+            }
             throw networkErr;
           }
         );
@@ -997,23 +1032,31 @@
       const origOpen = proto.open ;
       const origSend = proto.send ;
 
-      proto.open = function sentraceXhrOpen(
+      const wrappedOpen = function sentraceXhrOpen(
 
         method        ,
         url              ,
         ...rest
       )          {
-        this.__sentraceXhrMeta = {
-          method: String(method || "GET").toUpperCase(),
-          url: String(url || "")
-        };
+        if (active) {
+          this.__sentraceXhrMeta = {
+            method: String(method || "GET").toUpperCase(),
+            url: String(url || "")
+          };
+        }
         return origOpen.call(this, method, url, ...rest);
       };
 
-      proto.send = function sentraceXhrSend(                               body          )          {
+      const wrappedSend = function sentraceXhrSend(                               body          )          {
+        if (!active) {
+          return origSend.call(this, body);
+        }
         const meta = this.__sentraceXhrMeta                                               ;
         if (meta && !isInternalEndpoint(meta.url, hooks.endpointUrl)) {
           const onLoadEnd = ()       => {
+            if (!active) {
+              return;
+            }
             const status = typeof this.status === "number" ? this.status : undefined;
             const getHeader = this.getResponseHeader                                                 ;
             let requestId                    ;
@@ -1051,13 +1094,21 @@
         return origSend.call(this, body);
       };
 
+      proto.open = wrappedOpen;
+      proto.send = wrappedSend;
+
       cleanups.push(() => {
-        proto.open = origOpen;
-        proto.send = origSend;
+        if (proto.open === wrappedOpen) {
+          proto.open = origOpen;
+        }
+        if (proto.send === wrappedSend) {
+          proto.send = origSend;
+        }
       });
     }
 
     return () => {
+      active = false;
       for (const fn of cleanups.splice(0)) {
         try {
           fn();
@@ -1142,6 +1193,7 @@
     hooks                       ,
     customDoc
   )             {
+    let active = true;
     const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
     const doc = rawDoc                                 ;
     if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
@@ -1149,6 +1201,9 @@
     }
 
     const onTurboVisit = (rawEvent         )       => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent                                                              ;
       const detail = ev ? ev.detail : undefined;
       hooks.onBreadcrumb({
@@ -1163,6 +1218,9 @@
     };
 
     const onTurboLoad = ()       => {
+      if (!active) {
+        return;
+      }
       const refreshed = readRailsMeta(doc);
       if (refreshed.requestId) {
         hooks.onRequestIdChange(refreshed.requestId);
@@ -1170,6 +1228,9 @@
     };
 
     const onTurboFetchRequestError = (rawEvent         )       => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent
 
                    ;
@@ -1206,6 +1267,9 @@
     };
 
     const onTurboFrameMissing = (rawEvent         )       => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent
 
                    ;
@@ -1247,6 +1311,7 @@
     doc.addEventListener("turbo:frame-missing", onTurboFrameMissing);
 
     return () => {
+      active = false;
       if (typeof doc.removeEventListener === "function") {
         doc.removeEventListener("turbo:visit", onTurboVisit);
         doc.removeEventListener("turbo:load", onTurboLoad);
@@ -1268,30 +1333,33 @@
       return () => {};
     }
 
+    let active = true;
     const originalHandler =
       typeof application.handleError === "function" ? application.handleError.bind(application) : null;
 
     const wrappedHandler = (error       , message        , detail                          = {})       => {
-      const ctrl = detail.controller                                        ;
-      const identifier =
-        (typeof detail.identifier === "string" && detail.identifier) ||
-        (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
-      const action = typeof detail.action === "string" ? detail.action : undefined;
+      if (active) {
+        const ctrl = detail.controller                                        ;
+        const identifier =
+          (typeof detail.identifier === "string" && detail.identifier) ||
+          (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
+        const action = typeof detail.action === "string" ? detail.action : undefined;
 
-      captureFn(error, {
-        tags: {
-          "rails.stimulus": "true",
-          ...(identifier ? { "stimulus.controller": identifier } : {}),
-          ...(action ? { "stimulus.action": action } : {})
-        },
-        contexts: {
-          stimulus: {
-            message,
-            ...(identifier ? { controller: identifier } : {}),
-            ...(action ? { action } : {})
+        captureFn(error, {
+          tags: {
+            "rails.stimulus": "true",
+            ...(identifier ? { "stimulus.controller": identifier } : {}),
+            ...(action ? { "stimulus.action": action } : {})
+          },
+          contexts: {
+            stimulus: {
+              message,
+              ...(identifier ? { controller: identifier } : {}),
+              ...(action ? { action } : {})
+            }
           }
-        }
-      });
+        });
+      }
 
       if (originalHandler) {
         originalHandler(error, message, detail);
@@ -1301,6 +1369,7 @@
     application.handleError = wrappedHandler;
 
     return () => {
+      active = false;
       if (application.handleError === wrappedHandler && originalHandler) {
         application.handleError = originalHandler;
       }
@@ -1346,7 +1415,8 @@
         maxStackFrames: nullishCoalesce(options.maxStackFrames, 50)
       });
 
-      if (railsMeta.requestId) {
+      scope.trimBreadcrumbs(this.config.maxBreadcrumbs);
+      if (railsMeta.requestId && scope.getTag("request_id") === undefined) {
         scope.setTag("request_id", railsMeta.requestId);
       }
 
@@ -1519,6 +1589,10 @@
       });
     }
 
+    isEnabled()          {
+      return !this.closed && this.config.enabled && this.parsedDsn !== null && this.transport !== null;
+    }
+
     async flush(timeout = 2000)                   {
       if (!this.transport) {
         return true;
@@ -1527,9 +1601,13 @@
     }
 
     async close(timeout = 2000)                   {
+      this.deactivate();
+      return this.flush(timeout);
+    }
+
+    deactivate()       {
       this.closed = true;
       this.teardownInstrumentation();
-      return this.flush(timeout);
     }
 
     teardownInstrumentation()       {
@@ -1540,7 +1618,7 @@
 
             prepareAndSend(event             , scope       , hint                 )         {
       const eventId = event.event_id;
-      if (this.closed || !this.config.enabled || !this.parsedDsn || !this.transport) {
+      if (!this.isEnabled() || !this.parsedDsn || !this.transport) {
         return eventId;
       }
 
@@ -1581,8 +1659,12 @@
       }
 
       const envelope = serializeEnvelope(finalEvent, this.parsedDsn);
+      const sentId = finalEvent.event_id || eventId;
+      if (this === activeClient) {
+        lastCapturedEventId = sentId;
+      }
       void this.transport.send(envelope);
-      return finalEvent.event_id || eventId;
+      return sentId;
     }
 
             shouldFilterEvent(event             )          {
@@ -1636,6 +1718,7 @@
   // Singleton hub state
   let activeClient                       = null;
   let globalScope = new Scope();
+  let lastCapturedEventId                     = undefined;
   const scopeStack          = [];
 
   function activeScope()        {
@@ -1644,9 +1727,8 @@
 
   function init(options                  = {})                     {
     if (activeClient) {
-      activeClient.teardownInstrumentation();
+      activeClient.deactivate();
     }
-    globalScope = new Scope();
     scopeStack.length = 0;
     activeClient = new BrowserClient(options, globalScope);
     return activeClient.config;
@@ -1666,6 +1748,14 @@
 
   function isInitialized()          {
     return activeClient !== null;
+  }
+
+  function isEnabled()          {
+    return activeClient !== null && activeClient.isEnabled();
+  }
+
+  function lastEventId()                     {
+    return lastCapturedEventId;
   }
 
   function getCurrentScope()        {
@@ -1759,19 +1849,23 @@
   }
 
   async function close(timeout = 2000)                   {
-    if (!activeClient) {
-      return true;
-    }
     const client = activeClient;
     activeClient = null;
+    lastCapturedEventId = undefined;
+    globalScope = new Scope();
+    scopeStack.length = 0;
+    if (!client) {
+      return true;
+    }
     return client.close(timeout);
   }
 
   function resetClient()       {
     if (activeClient) {
-      activeClient.teardownInstrumentation();
+      activeClient.deactivate();
     }
     activeClient = null;
+    lastCapturedEventId = undefined;
     globalScope = new Scope();
     scopeStack.length = 0;
   }
@@ -1791,6 +1885,8 @@
     getConfig,
     getClient,
     isInitialized,
+    isEnabled,
+    lastEventId,
     getCurrentScope,
     getGlobalScope,
     getIsolationScope,

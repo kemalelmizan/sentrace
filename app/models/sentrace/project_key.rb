@@ -8,6 +8,8 @@ module Sentrace
     scope :active, -> { where(active: true, revoked_at: nil) }
 
     before_validation :ensure_public_key, on: :create
+    after_save :invalidate_runtime_caches
+    after_destroy :invalidate_runtime_caches
 
     validates :public_key, presence: true, length: { maximum: 64 }, uniqueness: true
     validates :secret_digest, length: { maximum: 255 }, allow_nil: true
@@ -55,6 +57,11 @@ module Sentrace
     private
       def ensure_public_key
         self.public_key = SecureRandom.hex(16) if public_key.blank?
+      end
+
+      def invalidate_runtime_caches
+        CaptureDispatcher.clear_cache! if defined?(CaptureDispatcher)
+        FrontendDsnResolver.clear_cache! if defined?(FrontendDsnResolver)
       end
   end
 end

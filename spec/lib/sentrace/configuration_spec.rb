@@ -37,6 +37,8 @@ RSpec.describe Sentrace::Configuration do
       expect(config.allow_fields).to eq([])
       expect(config.retain_user_fields).to eq([])
       expect(config.sanitizer).to be_nil
+      expect(config.remote_timeout).to eq(5.0)
+      expect(config.remote_ping_timeout).to eq(2.5)
       expect(config.environments.keys).to eq([ :local ])
       expect(config.environments[:local].transport).to eq(:local)
     end
@@ -269,6 +271,39 @@ RSpec.describe Sentrace::Configuration do
           }
         end
       }.to raise_error(Sentrace::ConfigurationError, /requires HTTPS for non-local host/)
+    end
+
+    it "allows :http environments with blank url or token at boot without raising ConfigurationError" do
+      expect {
+        Sentrace.configure do |config|
+          config.remote_ping_timeout = 1.5
+          config.environments = {
+            local: { transport: :local },
+            staging: { transport: :http, url: nil, token: nil },
+            production: { transport: :http, url: "   ", token: "" }
+          }
+        end
+      }.not_to raise_error
+
+      expect(Sentrace.configuration.remote_ping_timeout).to eq(1.5)
+      expect(Sentrace.configuration.environments.keys).to eq([ :local, :staging, :production ])
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.remote_ping_timeout = 0 }
+      }.to raise_error(Sentrace::ConfigurationError, /remote_ping_timeout must be a positive number/)
+    end
+
+    it "deep-copies mutable array and environment collections on #dup" do
+      original = Sentrace::Configuration.new
+      copy = original.dup
+      copy.excluded_exceptions << "CustomExcludedError"
+      copy.redact_fields << "secret_pin"
+      copy.environments = { local: { transport: :local }, staging: { transport: :http, url: nil, token: nil } }
+
+      expect(original.excluded_exceptions).not_to include("CustomExcludedError")
+      expect(original.redact_fields).not_to include("secret_pin")
+      expect(original.environments.keys).to eq([ :local ])
     end
 
     it "rejects unsupported transports" do

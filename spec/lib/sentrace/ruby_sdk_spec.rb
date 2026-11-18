@@ -299,4 +299,39 @@ RSpec.describe "Sentrace Native Ruby SDK" do
       expect(JSON.generate(http_crumb)).not_to include("\"secret\":123")
     end
   end
+
+  describe "Sentrace.with_configuration and Sentrace::TestHelpers" do
+    include Sentrace::TestHelpers
+
+    it "isolates configuration, caches, deduplicator state, and scope per example even when an exception is raised" do
+      Sentrace.configure do |config|
+        config.enabled = false
+        config.capture_dispatch = :async
+        config.project_slug = nil
+      end
+
+      expect(Sentrace.configuration.enabled).to be(false)
+      expect(Sentrace.configuration.capture_dispatch).to eq(:async)
+
+      captured_id = nil
+      expect {
+        with_sentrace_test_config(project_slug: project.slug, sample_rate: 1.0) do
+          expect(Sentrace.configuration.enabled).to be(true)
+          expect(Sentrace.configuration.capture_dispatch).to eq(:inline)
+          Sentrace.set_tag("test_helper_tag", "isolated")
+          captured_id = Sentrace.capture_message("Captured inside test helper", level: :warning)
+          raise RuntimeError, "simulated spec failure"
+        end
+      }.to raise_error(RuntimeError, "simulated spec failure")
+
+      expect(captured_id).to match(/\A[0-9a-f]{32}\z/)
+      persisted = Sentrace::Event.find_by!(project_id: project.id, event_id: captured_id)
+      expect(persisted.event_data.dig("tags", "test_helper_tag")).to eq("isolated")
+
+      expect(Sentrace.configuration.enabled).to be(false)
+      expect(Sentrace.configuration.capture_dispatch).to eq(:async)
+      expect(Sentrace.configuration.project_slug).to be_nil
+      expect(Sentrace.current_scope.tags).to be_empty
+    end
+  end
 end

@@ -84,7 +84,8 @@ export class BrowserClient {
       maxStackFrames: nullishCoalesce(options.maxStackFrames, 50)
     });
 
-    if (railsMeta.requestId) {
+    scope.trimBreadcrumbs(this.config.maxBreadcrumbs);
+    if (railsMeta.requestId && scope.getTag("request_id") === undefined) {
       scope.setTag("request_id", railsMeta.requestId);
     }
 
@@ -257,6 +258,10 @@ export class BrowserClient {
     });
   }
 
+  isEnabled(): boolean {
+    return !this.closed && this.config.enabled && this.parsedDsn !== null && this.transport !== null;
+  }
+
   async flush(timeout = 2000): Promise<boolean> {
     if (!this.transport) {
       return true;
@@ -265,9 +270,13 @@ export class BrowserClient {
   }
 
   async close(timeout = 2000): Promise<boolean> {
+    this.deactivate();
+    return this.flush(timeout);
+  }
+
+  deactivate(): void {
     this.closed = true;
     this.teardownInstrumentation();
-    return this.flush(timeout);
   }
 
   teardownInstrumentation(): void {
@@ -278,7 +287,7 @@ export class BrowserClient {
 
   private prepareAndSend(event: SentryEvent, scope: Scope, hint: SentryEventHint): string {
     const eventId = event.event_id;
-    if (this.closed || !this.config.enabled || !this.parsedDsn || !this.transport) {
+    if (!this.isEnabled() || !this.parsedDsn || !this.transport) {
       return eventId;
     }
 
@@ -320,8 +329,12 @@ export class BrowserClient {
     }
 
     const envelope = serializeEnvelope(finalEvent, this.parsedDsn);
+    const sentId = finalEvent.event_id || eventId;
+    if (this === activeClient) {
+      lastCapturedEventId = sentId;
+    }
     void this.transport.send(envelope);
-    return finalEvent.event_id || eventId;
+    return sentId;
   }
 
   private shouldFilterEvent(event: SentryEvent): boolean {
@@ -375,6 +388,7 @@ export class BrowserClient {
 // Singleton hub state
 let activeClient: BrowserClient | null = null;
 let globalScope = new Scope();
+let lastCapturedEventId: string | undefined = undefined;
 const scopeStack: Scope[] = [];
 
 function activeScope(): Scope {
@@ -383,9 +397,8 @@ function activeScope(): Scope {
 
 export function init(options: SentraceOptions = {}): FrozenClientConfig {
   if (activeClient) {
-    activeClient.teardownInstrumentation();
+    activeClient.deactivate();
   }
-  globalScope = new Scope();
   scopeStack.length = 0;
   activeClient = new BrowserClient(options, globalScope);
   return activeClient.config;
@@ -405,6 +418,14 @@ export function getClient(): BrowserClient | undefined {
 
 export function isInitialized(): boolean {
   return activeClient !== null;
+}
+
+export function isEnabled(): boolean {
+  return activeClient !== null && activeClient.isEnabled();
+}
+
+export function lastEventId(): string | undefined {
+  return lastCapturedEventId;
 }
 
 export function getCurrentScope(): Scope {
@@ -498,19 +519,23 @@ export async function flush(timeout = 2000): Promise<boolean> {
 }
 
 export async function close(timeout = 2000): Promise<boolean> {
-  if (!activeClient) {
-    return true;
-  }
   const client = activeClient;
   activeClient = null;
+  lastCapturedEventId = undefined;
+  globalScope = new Scope();
+  scopeStack.length = 0;
+  if (!client) {
+    return true;
+  }
   return client.close(timeout);
 }
 
 export function resetClient(): void {
   if (activeClient) {
-    activeClient.teardownInstrumentation();
+    activeClient.deactivate();
   }
   activeClient = null;
+  lastCapturedEventId = undefined;
   globalScope = new Scope();
   scopeStack.length = 0;
 }

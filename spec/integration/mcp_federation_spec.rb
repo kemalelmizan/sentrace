@@ -280,7 +280,13 @@ RSpec.describe "MCP Multi-Environment Federation Integration" do
     expect(corr["environments"]).to contain_exactly("local", "staging", "production")
     expect(corr["total_event_count"]).to eq(1 + 7 + 42)
 
-    merged_trends = dispatcher.dispatch(:get_error_trends, environment: "all", interval: "hour")
+    merged_trends = dispatcher.dispatch(
+      :get_error_trends,
+      environment: "all",
+      interval: "hour",
+      since: "2026-11-16T00:00:00Z",
+      until: "2026-11-16T12:00:00Z"
+    )
     expect(merged_trends["total_events"]).to eq(1 + 7 + 45)
     expect(merged_trends["series"].map { |s| s["environment"] }).to eq(%w[local staging production])
 
@@ -406,5 +412,48 @@ RSpec.describe "MCP Multi-Environment Federation Integration" do
     expect(issues_res["issues"].size).to eq(1)
     expect(issues_res["issues"].first["fingerprint"]).to eq(shared_fingerprint)
     expect(issues_res["issues"].first["environment"]).to eq("remote_prod")
+  end
+
+  it "probes multiple offline remote environments concurrently in list_environments within remote_ping_timeout and marks blank environments unconfigured" do
+    config = Sentrace::Configuration.new.tap do |c|
+      c.remote_timeout = 5.0
+      c.remote_ping_timeout = 0.2
+      c.environments = {
+        local: { transport: :local },
+        staging: { transport: :http, url: "https://staging.internal.example/sentrace/mcp", token: "snt_mcp_stg", timeout: 5.0 },
+        pre_prod: { transport: :http, url: "https://preprod.internal.example/sentrace/mcp", token: "snt_mcp_pre", timeout: 5.0 },
+        production: { transport: :http, url: "https://prod.internal.example/sentrace/mcp", token: "snt_mcp_prd", timeout: 5.0 },
+        dr_standby: { transport: :http, url: nil, token: nil, timeout: 5.0 }
+      }
+    end
+
+    slow_dns_client = Sentrace::Mcp::RemoteHttpClient.new(
+      http_requester: lambda do |uri:, headers:, body:, timeout:|
+        _ = [ uri, headers, body, timeout ]
+        sleep 2.0
+        raise "unreachable"
+      end
+    )
+    dispatcher = Sentrace::Mcp::Dispatcher.new(config: config, remote_client: slow_dns_client)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = dispatcher.list_environments
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    expect(elapsed).to be < 0.55
+    expect(result["environments"].map { |e| [ e["name"], e["status"] ] }).to eq(
+      [
+        [ "local", "connected" ],
+        [ "staging", "timeout" ],
+        [ "pre_prod", "timeout" ],
+        [ "production", "timeout" ],
+        [ "dr_standby", "unconfigured" ]
+      ]
+    )
+
+    federated = dispatcher.dispatch(:list_projects, environment: "all")
+    expect(federated["errors"]).to include(
+      hash_including("environment" => "dr_standby", "category" => "unconfigured")
+    )
   end
 end

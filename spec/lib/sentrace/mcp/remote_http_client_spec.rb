@@ -140,4 +140,52 @@ RSpec.describe Sentrace::Mcp::RemoteHttpClient do
     )
     expect(unauth_client.environment_status(env)).to eq("authentication_failed")
   end
+
+  it "reports unconfigured without performing network I/O when url or token is blank" do
+    network_called = false
+    client = described_class.new(http_requester: ->(**_args) { network_called = true })
+
+    blank_url_env = build_env(url: nil, token: "snt_mcp_secret")
+    blank_token_env = build_env(url: "https://staging.example.com/sentrace/mcp", token: "")
+
+    expect(client.environment_status(blank_url_env)).to eq("unconfigured")
+    expect(client.environment_status(blank_token_env)).to eq("unconfigured")
+
+    expect {
+      client.call_environment(blank_url_env, :list_issues)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("unconfigured") }
+
+    expect {
+      client.call_environment(blank_token_env, :list_issues)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("unconfigured") }
+
+    expect(network_called).to be(false)
+  end
+
+  it "enforces strict monotonic wall-clock and SSL handshake timeouts in perform_net_http_post" do
+    stalled_tls_server = TCPServer.new("127.0.0.1", 0)
+    port = stalled_tls_server.addr[1]
+    accept_thread = Thread.new do
+      sock = stalled_tls_server.accept
+      sleep 1.0
+      sock&.close
+    rescue IOError, Errno::EBADF
+      nil
+    end
+
+    begin
+      tls_env = build_env(url: "https://localhost:#{port}/sentrace/mcp", timeout: 5.0)
+      real_client = described_class.new
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      status = real_client.environment_status(tls_env, timeout: 0.15)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(status).to eq("timeout")
+      expect(elapsed).to be < 0.5
+    ensure
+      stalled_tls_server.close unless stalled_tls_server.closed?
+      accept_thread.join(0.2)
+    end
+  end
 end

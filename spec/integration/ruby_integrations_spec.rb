@@ -82,6 +82,50 @@ RSpec.describe "Automatic Rack/Rails, Sidekiq, and ActiveJob Integrations" do
       expect(followup_event.event_data["tags"]).not_to have_key("tenant")
       expect(followup_event.event_data["breadcrumbs"]).to eq([])
     end
+
+    it "populates HTTP method + path fallback culprit when path_parameters is absent and ignores non-in_app Puma stream disconnects" do
+      stub_const("ActionController::Live::ClientDisconnected", Class.new(IOError)) unless defined?(ActionController::Live::ClientDisconnected)
+
+      mode = :puma_disconnect
+      middleware = Sentrace::Integrations::RackMiddleware.new(
+        lambda do |_env|
+          case mode
+          when :puma_disconnect
+            err = IOError.new("stream closed in another thread")
+            err.set_backtrace([
+              "/opt/gems/puma-6.4.2/lib/puma/client.rb:210:in `try_to_finish'",
+              "/opt/gems/puma-6.4.2/lib/puma/server.rb:450:in `process_client'"
+            ])
+            raise err
+          when :live_disconnect
+            raise ActionController::Live::ClientDisconnected, "client disconnected"
+          when :in_app_io_error
+            err = IOError.new("upstream socket closed while reading report")
+            err.set_backtrace([
+              "#{Rails.root}/app/services/report_gateway.rb:29:in `fetch_report'",
+              "/opt/gems/puma-6.4.2/lib/puma/server.rb:450:in `process_client'"
+            ])
+            raise err
+          end
+        end
+      )
+
+      env = Rack::MockRequest.env_for("https://shop.example.com/api/v1/reports?token=secret_tok", method: "GET")
+      expect { middleware.call(env) }.to raise_error(IOError, /stream closed in another thread/)
+      expect(project.events.count).to eq(0)
+
+      mode = :live_disconnect
+      expect { middleware.call(env) }.to raise_error(ActionController::Live::ClientDisconnected)
+      expect(project.events.count).to eq(0)
+
+      mode = :in_app_io_error
+      expect { middleware.call(env) }.to raise_error(IOError, /upstream socket closed/)
+      expect(project.events.count).to eq(1)
+
+      captured = project.events.order(:id).last
+      expect(captured.culprit).to eq("GET /api/v1/reports")
+      expect(captured.culprit).not_to include("secret_tok")
+    end
   end
 
   describe "Sentrace::Integrations::ActiveJob and Sidekiq (with deduplication)" do

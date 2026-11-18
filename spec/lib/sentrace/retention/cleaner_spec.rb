@@ -56,6 +56,10 @@ RSpec.describe Sentrace::Retention::Cleaner do
 
     expect(result.deleted_events_count).to eq(2)
     expect(result.deleted_orphan_issues_count).to eq(1)
+    expect(result.event_batches).to eq(1)
+    expect(result.issue_batches).to eq(1)
+    expect(result.event_cutoff).to eq(now - 30.days)
+    expect(result.orphan_issue_cutoff).to eq(now - 40.days)
     expect(project.events.count).to eq(0)
 
     remaining_issues = project.issues.to_a

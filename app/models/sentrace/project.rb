@@ -7,6 +7,9 @@ module Sentrace
     has_many :issues, dependent: :destroy
     has_many :events, dependent: :destroy
 
+    after_save :invalidate_runtime_caches
+    after_destroy :invalidate_runtime_caches
+
     validates :name, presence: true, length: { maximum: 120 }
     validates :slug,
       presence: true,
@@ -91,5 +94,11 @@ module Sentrace
 
       Dsn.build(base_url: base_url, public_key: key.public_key, project_id: id).to_s
     end
+
+    private
+      def invalidate_runtime_caches
+        CaptureDispatcher.clear_cache! if defined?(CaptureDispatcher)
+        FrontendDsnResolver.clear_cache! if defined?(FrontendDsnResolver)
+      end
   end
 end

@@ -19,7 +19,7 @@ Sentrace::Ingestion::Processor
         v
 PostgreSQL (sentrace_projects, sentrace_project_keys, sentrace_mcp_tokens, sentrace_issues, sentrace_events)
         |
-        +---> Local MCP Server (stdio: bin/rails sentrace:mcp)
+        +---> Local MCP Server (stdio: ./bin/sentrace-mcp)
         |         \
         |          +---> EnvironmentRouter ---> Remote Streamable HTTP (/sentrace/mcp on staging & production)
         |
@@ -81,7 +81,7 @@ Install the zero-dependency [`sentrace` npm package](packages/sentrace/README.md
 npm install sentrace
 ```
 
-> **Important (`<head>` ordering):** Render `<%= sentrace_meta_tags %>` inside `<head>` **before** any synchronous `<script>`, `javascript_pack_tag`, `javascript_include_tag`, or `yield(:head)` tags in `app/views/layouts/application.html.erb` (with `config.frontend_dsn` set in `config/initializers/sentrace.rb`). Synchronous packs executing in `<head>` read `<meta name="sentrace-*">` immediately during `Sentrace.init()`.
+> **Zero-config same-origin DSN & `<head>` ordering:** When `config.project_slug` (or `config.project_id`) is configured and `Sentrace::Engine` is mounted, `<%= sentrace_meta_tags %>` automatically builds and caches the public DSN from `request.base_url` + `/sentrace` with **zero SQL queries** per page render after warmup — no `SENTRACE_FRONTEND_DSN` environment variable required (`config.frontend_dsn` remains available as an override for cross-origin SPAs or CDN hosts). Render `<%= sentrace_meta_tags %>` inside `<head>` **before** any synchronous `<script>`, `javascript_pack_tag`, `javascript_include_tag`, or `yield(:head)` tags in `app/views/layouts/application.html.erb`.
 
 ```erb
 <head>
@@ -91,7 +91,16 @@ npm install sentrace
 </head>
 ```
 
-Initialize in `app/javascript/application.js`:
+For SPAs fetching runtime configuration over JSON (`/api/v1/configs`), call `Sentrace.frontend_dsn(request: request)` (or `Sentrace.resolve_frontend_dsn(base_url: "https://app.example.com")`), which shares the same precedence, secret-stripping, and thread-safe in-memory cache:
+
+```ruby
+render json: {
+  sentrace_dsn: Sentrace.frontend_dsn(request: request),
+  release: Sentrace.configuration.release
+}
+```
+
+Initialize in `app/javascript/application.js` (`Sentrace.init()` is idempotent and safely updates options without duplicating listeners if called again after a runtime config fetch; `Sentrace.isEnabled()` and `Sentrace.lastEventId()` are also exported):
 
 ```js
 import * as Sentrace from "sentrace";
@@ -124,12 +133,12 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `project_slug` / `project_id` | `nil` | Target `Sentrace::Project` for native in-process Ruby capture (`Rack`, `Sidekiq`, `ActiveJob`, `Sentrace.capture_*`). |
 | `capture_unhandled_exceptions` | `true` when target project set | Automatically capture unhandled Rack/Rails, Sidekiq, and ActiveJob exceptions. |
 | `sample_rate` | `1.0` | Probabilistic client sampling rate (`0.0..1.0`) for native Ruby capture. |
-| `excluded_exceptions` | Standard Rails 404/400 classes | Exceptions ignored by unhandled middleware/job integrations (explicit `capture_exception` still captures). |
+| `excluded_exceptions` | Standard Rails 404/400 + `ClientDisconnected` | Exceptions ignored by unhandled middleware/job integrations (explicit `capture_exception` still captures). |
 | `before_send` | `nil` | Optional callable `->(raw_event_hash, hint) { hash_or_nil }` for mutating or dropping native Ruby events. |
 | `breadcrumbs_logger` | `[]` | Safe instrumentation loggers (`%i[active_support_logger http_logger]`, omitting SQL binds and HTTP bodies). |
 | `async_queue_size` | `256` | Bounded non-blocking `SizedQueue` capacity for transaction-isolated, fork-safe background persistence. |
 | `capture_dispatch` | `:async` | `:async` (`SizedQueue` worker thread) or `:inline` (isolated from open/aborted caller transactions). |
-| `frontend_dsn` | `nil` | Public DSN rendered by `sentrace_meta_tags` (strips any accidental secret key). |
+| `frontend_dsn` | `nil` | Optional explicit public DSN override (auto-resolved from `project_slug` / `project_id` on same-origin apps when blank). |
 | `release` | `ENV["APP_RELEASE"]` | Release label rendered by `sentrace_meta_tags`. |
 | `cors_allowed_origins` | `[]` | Allowed browser `Origin`s (`Array` of origins or `"*"`) for `/api/:project_id/envelope`. |
 | `retention_period` | `30.days` | How long normalized `sentrace_events` rows are retained before batch pruning. |
@@ -146,9 +155,30 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `retain_user_fields` | `[]` | Opt-in non-secret scalar `user` fields retained (`<= 256 B` each) alongside `user.id_hash` (e.g. `%w[id email username name]`). |
 | `sanitizer` | `nil` | Optional callable `->(normalized_event_hash) { ... }` invoked before persistence. |
 | `user_hash_secret` | `nil` | Secret key mixed with `project_id` to compute one-way HMAC-SHA256 `user.id_hash`. |
-| `remote_timeout` | `5.0` | Default timeout (seconds) for remote `:http` MCP federation requests. |
-| `environments` | `{ local: { transport: :local } }` | Map of `:local` and `:http` MCP environments for federation. |
+| `remote_timeout` | `5.0` | Default wall-clock timeout (seconds) for remote `:http` MCP federation requests. |
+| `remote_ping_timeout` | `2.5` | Upper wall-clock bound (seconds) for concurrent `list_environments` `ping` health probes. |
+| `environments` | `{ local: { transport: :local } }` | Map of `:local` and `:http` MCP environments (blank `:http` URL/token reports `"unconfigured"` safely). |
 | `internal_authenticator` | `nil` | Optional callable `->(request) { boolean }` for `/sentrace/internal/*` routes (defaults to MCP bearer token auth). |
+
+### Rack / Puma Client Disconnects & Host RSpec Helpers
+
+- **Fallback middleware `culprit` & socket-disconnect filtering:** When a Rack middleware raises before Rails routing populates `action_dispatch.request.path_parameters`, `RackMiddleware` automatically populates `culprit` as `"#{method} #{path}"` (without query string). `ActionController::Live::ClientDisconnected` and pure Puma socket-layer `IOError` (`stream closed in another thread` with zero `in_app` frames) are ignored out of the box, while `in_app` `IOError` / `Errno::ECONNRESET` / `Errno::EPIPE` errors from upstream services are preserved (use `config.before_send` if your app streams chunked responses and wants to drop specific `Errno::EPIPE` / `Errno::ECONNRESET` hints).
+- **Host RSpec isolation (`Sentrace::TestHelpers` & `Sentrace.with_configuration`):** Generated initializers default `config.enabled` to `false` in `Rails.env.test?` unless `SENTRACE_ENABLED=true`. In specs that exercise Sentrace directly, include `Sentrace::TestHelpers` (or call `Sentrace.with_configuration`) to enable `:inline` capture and automatically restore configuration, caches, deduplicator state, and fiber scopes after each example:
+
+```ruby
+RSpec.describe "Error reporting" do
+  include Sentrace::TestHelpers
+
+  it "captures handled checkout errors synchronously" do
+    project, _ = Sentrace::Project.ensure!(slug: "my-app")
+
+    with_sentrace_test_config(project_slug: project.slug) do
+      Sentrace.capture_message("Checkout fallback triggered", level: :warning)
+      expect(project.events.count).to eq(1)
+    end
+  end
+end
+```
 
 ## Project & Credential Management
 
@@ -222,20 +252,31 @@ SecRule REQUEST_URI "@rx ^/sentrace/(?:api/|mcp(?:$|/))" \
 
 ## Local MCP Server (`stdio`) & Environment Federation
 
-Run the standalone Sentrace MCP server over `stdio` (no running Rails web server required):
+`bin/rails generate sentrace:install` creates an executable `bin/sentrace-mcp` binstub (`chmod 0755`) that automatically `cd`s to the Rails root, prepends user Ruby version-manager shims (`~/.rbenv/shims`, `~/.local/share/mise/shims`, `~/.asdf/shims`), and isolates `stdout` (`fd 1`) **before** booting Rails so gem/initializer `puts` or logger output never corrupts MCP JSON-RPC framing (`bin/rails sentrace:mcp` is also available for interactive shell use):
 
 ```bash
-bin/rails sentrace:mcp
+./bin/sentrace-mcp
 ```
 
-Example `.mcp.json` configuration (Claude Code / Cursor / Antigravity):
+Workspace-local `.mcp.json` configuration (Claude Code / Cursor / Antigravity):
 
 ```json
 {
   "mcpServers": {
     "sentrace": {
-      "command": "bin/rails",
-      "args": ["sentrace:mcp"]
+      "command": "./bin/sentrace-mcp"
+    }
+  }
+}
+```
+
+Global IDE / daemon MCP configuration (`~/.gemini/config/mcp_config.json`, `~/.cursor/mcp.json`, Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "sentrace": {
+      "command": "/absolute/path/to/app/bin/sentrace-mcp"
     }
   }
 }
@@ -273,7 +314,7 @@ end
 
 ## Retention, Storage Observability & Benchmarking
 
-Run bounded batch retention via Rake or enqueue `Sentrace::RetentionCleanupJob` using any Rails ActiveJob adapter (no Redis required):
+Run bounded batch retention via Rake, enqueue `Sentrace::RetentionCleanupJob` using any Rails ActiveJob adapter, or invoke `Sentrace::Retention::Cleaner.run!` directly from a native `sidekiq-cron` / scheduler worker (no Redis or ActiveJob required):
 
 ```bash
 # Prune expired events and aged orphan issues
@@ -285,6 +326,21 @@ bin/rails sentrace:stats
 # Run the repeatable PostgreSQL storage, throughput, and latency benchmark
 EVENTS=500 bin/rails sentrace:benchmark:storage
 ```
+
+Programmatic retention cleanup (`Sentrace::Retention::Cleaner.run!`) returns an immutable `Sentrace::Retention::Cleaner::CleanupResult` (`Data.define`) struct:
+
+```ruby
+result = Sentrace::Retention::Cleaner.run!
+```
+
+| `CleanupResult` Attribute | Type | Description |
+|---|---|---|
+| `deleted_events_count` | `Integer` | Total expired `sentrace_events` rows deleted across all batches. |
+| `deleted_orphan_issues_count` | `Integer` | Total zero-event `sentrace_issues` rows deleted past `orphan_issue_retention_period`. |
+| `event_batches` | `Integer` | Number of `DELETE ... LIMIT` batches executed against `sentrace_events`. |
+| `issue_batches` | `Integer` | Number of `DELETE ... LIMIT` batches executed against `sentrace_issues`. |
+| `event_cutoff` | `Time` | UTC timestamp cutoff (`now - config.retention_period`) applied to `occurred_at`. |
+| `orphan_issue_cutoff` | `Time` | UTC timestamp cutoff (`now - config.orphan_issue_retention_period`) applied to `last_seen_at`. |
 
 Reference benchmark on PostgreSQL 18 / Ruby 3.3.13 (`EVENTS=500`, 8 stack frames + 8 breadcrumbs + tags/contexts per event):
 - **Average PostgreSQL storage per event**: `~1.7 KB` (`~29.8%` B-tree index share across all 5 engine tables)

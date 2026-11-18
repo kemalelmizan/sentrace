@@ -17,6 +17,7 @@ module Sentrace
       ActionController::BadRequest
       ActionController::InvalidAuthenticityToken
       ActionController::InvalidCrossOriginRequest
+      ActionController::Live::ClientDisconnected
       ActionController::MethodNotAllowed
       ActionController::NotImplemented
       ActionController::ParameterMissing
@@ -49,6 +50,7 @@ module Sentrace
       max_context_entries
       max_context_bytes
       remote_timeout
+      remote_ping_timeout
     ].freeze
 
     EnvironmentDefinition = Data.define(:name, :transport, :url, :token, :timeout) do
@@ -90,7 +92,8 @@ module Sentrace
       :sanitizer,
       :internal_authenticator,
       :user_hash_secret,
-      :remote_timeout
+      :remote_timeout,
+      :remote_ping_timeout
 
     attr_writer :capture_unhandled_exceptions
     attr_reader :environments
@@ -129,7 +132,19 @@ module Sentrace
       @internal_authenticator = nil
       @user_hash_secret = nil
       @remote_timeout = 5.0
+      @remote_ping_timeout = 2.5
       self.environments = { local: { transport: :local } }
+    end
+
+    def initialize_copy(other)
+      super
+      @excluded_exceptions = other.excluded_exceptions.dup
+      @breadcrumbs_logger = other.breadcrumbs_logger.dup
+      @cors_allowed_origins = other.cors_allowed_origins.is_a?(Array) ? other.cors_allowed_origins.map(&:dup) : other.cors_allowed_origins.dup
+      @redact_fields = other.redact_fields.dup
+      @allow_fields = other.allow_fields.dup
+      @retain_user_fields = other.retain_user_fields.dup
+      @environments = other.environments.dup
     end
 
     def environments=(raw_environments)
@@ -368,11 +383,10 @@ module Sentrace
           raise ConfigurationError, "environment #{env_def.name.inspect} timeout must be a positive number"
         end
 
-        if env_def.url.nil? || env_def.url.to_s.strip.empty?
-          raise ConfigurationError, "environment #{env_def.name.inspect} requires a url for :http transport"
-        end
+        raw_url = env_def.url.to_s.strip
+        return if raw_url.empty?
 
-        uri = URI.parse(env_def.url.to_s)
+        uri = URI.parse(raw_url)
         unless uri.is_a?(URI::HTTP) && uri.host && !uri.host.empty?
           raise ConfigurationError, "environment #{env_def.name.inspect} url #{env_def.url.inspect} is invalid"
         end

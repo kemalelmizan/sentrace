@@ -28,12 +28,15 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     output.string
   end
 
-  it "creates initializer, mounts engine, copies migrations, creates setup task, and prints Sentry.init snippet" do
+  it "creates test-safe initializer, executable bin/sentrace-mcp, route mount, migrations, setup task, and native-first instructions" do
     output = run_install_generator
 
     initializer_path = File.join(@destination, "config/initializers/sentrace.rb")
     expect(File.exist?(initializer_path)).to be(true)
-    expect(File.read(initializer_path)).to include("Sentrace.configure do |config|")
+    initializer_content = File.read(initializer_path)
+    expect(initializer_content).to include("Sentrace.configure do |config|")
+    expect(initializer_content).to include('ENV.fetch("SENTRACE_ENABLED", (!Rails.env.test?).to_s) == "true"')
+    expect(initializer_content).to include('config.project_slug = ENV.fetch("SENTRACE_PROJECT_SLUG"')
 
     routes_content = File.read(File.join(@destination, "config/routes.rb"))
     expect(routes_content.scan("Sentrace::Engine").size).to eq(1)
@@ -52,8 +55,20 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     expect(setup_task_content).to include("task setup: :environment")
     expect(setup_task_content).to include("Sentrace::Bootstrapper.new.run")
 
-    expect(output).to include("Sentry.init do |config|")
-    expect(output).to include("@localhost:3000/sentrace/1")
+    mcp_binstub_path = File.join(@destination, "bin/sentrace-mcp")
+    expect(File.exist?(mcp_binstub_path)).to be(true)
+    expect(File.executable?(mcp_binstub_path)).to be(true)
+    expect(File.stat(mcp_binstub_path).mode & 0o777).to eq(0o755)
+    mcp_binstub_content = File.read(mcp_binstub_path)
+    expect(mcp_binstub_content).to include(".rbenv/shims")
+    expect(mcp_binstub_content).to include(".local/share/mise/shims")
+    expect(mcp_binstub_content).to include(".asdf/shims")
+    expect(mcp_binstub_content).to include("$stdout.reopen($stderr)")
+    expect(mcp_binstub_content).to include("Sentrace::Mcp::StdioRunner.run(output: mcp_stdout, err_output: $stderr)")
+
+    expect(output).to include("config.project_slug")
+    expect(output).to include("Sentrace::SentryTransport")
+    expect(output).to include("./bin/sentrace-mcp")
     expect(output).to include("npm install sentrace")
     expect(output).to include("sentrace_meta_tags")
     expect(output).to include("BEFORE any synchronous <script>")

@@ -96,6 +96,7 @@ export function installRailsTurboInstrumentation(
   hooks: RailsIntegrationHooks,
   customDoc?: unknown
 ): () => void {
+  let active = true;
   const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
   const doc = rawDoc as MetaQueryDocument | undefined;
   if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
@@ -103,6 +104,9 @@ export function installRailsTurboInstrumentation(
   }
 
   const onTurboVisit = (rawEvent: unknown): void => {
+    if (!active) {
+      return;
+    }
     const ev = rawEvent as { detail?: { url?: string; action?: string } } | undefined;
     const detail = ev ? ev.detail : undefined;
     hooks.onBreadcrumb({
@@ -117,6 +121,9 @@ export function installRailsTurboInstrumentation(
   };
 
   const onTurboLoad = (): void => {
+    if (!active) {
+      return;
+    }
     const refreshed = readRailsMeta(doc);
     if (refreshed.requestId) {
       hooks.onRequestIdChange(refreshed.requestId);
@@ -124,6 +131,9 @@ export function installRailsTurboInstrumentation(
   };
 
   const onTurboFetchRequestError = (rawEvent: unknown): void => {
+    if (!active) {
+      return;
+    }
     const ev = rawEvent as
       | {
           detail?: {
@@ -167,6 +177,9 @@ export function installRailsTurboInstrumentation(
   };
 
   const onTurboFrameMissing = (rawEvent: unknown): void => {
+    if (!active) {
+      return;
+    }
     const ev = rawEvent as
       | {
           target?: { id?: string };
@@ -217,6 +230,7 @@ export function installRailsTurboInstrumentation(
   doc.addEventListener("turbo:frame-missing", onTurboFrameMissing);
 
   return () => {
+    active = false;
     if (typeof doc.removeEventListener === "function") {
       doc.removeEventListener("turbo:visit", onTurboVisit);
       doc.removeEventListener("turbo:load", onTurboLoad);
@@ -238,30 +252,33 @@ export function bindStimulusErrorHandler(
     return () => {};
   }
 
+  let active = true;
   const originalHandler =
     typeof application.handleError === "function" ? application.handleError.bind(application) : null;
 
   const wrappedHandler = (error: Error, message: string, detail: Record<string, unknown> = {}): void => {
-    const ctrl = detail.controller as { identifier?: unknown } | undefined;
-    const identifier =
-      (typeof detail.identifier === "string" && detail.identifier) ||
-      (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
-    const action = typeof detail.action === "string" ? detail.action : undefined;
+    if (active) {
+      const ctrl = detail.controller as { identifier?: unknown } | undefined;
+      const identifier =
+        (typeof detail.identifier === "string" && detail.identifier) ||
+        (ctrl && typeof ctrl.identifier === "string" ? ctrl.identifier : undefined);
+      const action = typeof detail.action === "string" ? detail.action : undefined;
 
-    captureFn(error, {
-      tags: {
-        "rails.stimulus": "true",
-        ...(identifier ? { "stimulus.controller": identifier } : {}),
-        ...(action ? { "stimulus.action": action } : {})
-      },
-      contexts: {
-        stimulus: {
-          message,
-          ...(identifier ? { controller: identifier } : {}),
-          ...(action ? { action } : {})
+      captureFn(error, {
+        tags: {
+          "rails.stimulus": "true",
+          ...(identifier ? { "stimulus.controller": identifier } : {}),
+          ...(action ? { "stimulus.action": action } : {})
+        },
+        contexts: {
+          stimulus: {
+            message,
+            ...(identifier ? { controller: identifier } : {}),
+            ...(action ? { action } : {})
+          }
         }
-      }
-    });
+      });
+    }
 
     if (originalHandler) {
       originalHandler(error, message, detail);
@@ -271,6 +288,7 @@ export function bindStimulusErrorHandler(
   application.handleError = wrappedHandler;
 
   return () => {
+    active = false;
     if (application.handleError === wrappedHandler && originalHandler) {
       application.handleError = originalHandler;
     }

@@ -9,14 +9,19 @@ module Sentrace
       end
 
       def list_environments
-        envs = @config.environments.values.map do |env_def|
-          {
-            "name" => env_def.name.to_s,
-            "transport" => env_def.transport.to_s,
-            "url" => env_def.url,
-            "timeout" => env_def.timeout,
-            "status" => environment_status(env_def)
-          }.compact
+        env_defs = @config.environments.values
+        use_threads = env_defs.size > 1
+
+        envs = if use_threads
+          threads = env_defs.map do |env_def|
+            Thread.new(env_def) do |target|
+              Thread.current.report_on_exception = false
+              build_environment_entry(target, in_worker_thread: true)
+            end
+          end
+          threads.map(&:value)
+        else
+          env_defs.map { |env_def| build_environment_entry(env_def, in_worker_thread: false) }
         end
 
         { "environments" => envs }
@@ -248,18 +253,45 @@ module Sentrace
           items
         end
 
-        def environment_status(env_def)
+        def build_environment_entry(env_def, in_worker_thread:)
+          {
+            "name" => env_def.name.to_s,
+            "transport" => env_def.transport.to_s,
+            "url" => env_def.url,
+            "timeout" => env_def.timeout,
+            "status" => environment_status(env_def, in_worker_thread: in_worker_thread)
+          }.compact
+        end
+
+        def environment_status(env_def, in_worker_thread: false)
           case env_def.transport
           when :local
-            LocalBackend.new(environment_name: env_def.name).connection_status
+            if in_worker_thread
+              ActiveRecord::Base.connection_pool.with_connection do
+                LocalBackend.new(environment_name: env_def.name).connection_status
+              end
+            else
+              LocalBackend.new(environment_name: env_def.name).connection_status
+            end
           when :http
-            return "unconfigured" if env_def.url.to_s.strip.empty?
-            return @remote_client.environment_status(env_def) if @remote_client
+            return "unconfigured" if env_def.url.to_s.strip.empty? || env_def.token.to_s.strip.empty?
+            if @remote_client
+              ping_timeout = resolve_ping_timeout(env_def)
+              return @remote_client.environment_status(env_def, timeout: ping_timeout)
+            end
 
             "configured"
           else
             "unknown"
           end
+        rescue StandardError
+          "unreachable"
+        end
+
+        def resolve_ping_timeout(env_def)
+          return env_def.timeout unless @config.respond_to?(:remote_ping_timeout) && @config.remote_ping_timeout
+
+          [ env_def.timeout, @config.remote_ping_timeout ].min
         end
     end
   end

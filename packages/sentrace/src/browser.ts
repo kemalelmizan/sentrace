@@ -48,6 +48,7 @@ function isInternalEndpoint(url: string, endpointUrl: string | null): boolean {
 }
 
 export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks): () => void {
+  let active = true;
   const cleanups: Array<() => void> = [];
   const g = getGlobalObject();
   const win = (g.window !== undefined && g.window !== null ? g.window : g) as {
@@ -68,6 +69,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
   if (win && typeof win.addEventListener === "function" && typeof win.removeEventListener === "function") {
     const errorListener = (rawEvent: unknown): void => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent as
         | {
             error?: unknown;
@@ -100,6 +104,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
     };
 
     const rejectionListener = (rawEvent: unknown): void => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent as { reason?: unknown } | undefined;
       const reason = ev && "reason" in ev ? ev.reason : new Error("Unhandled Promise rejection");
       hooks.onError(reason !== undefined && reason !== null ? reason : new Error("Unhandled Promise rejection"), {
@@ -119,6 +126,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
     let lastHref = win.location ? win.location.href : undefined;
     const popstateListener = (): void => {
+      if (!active) {
+        return;
+      }
       const nextHref = win.location ? win.location.href : undefined;
       hooks.onBreadcrumb({
         type: "navigation",
@@ -143,7 +153,10 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       for (const methodName of ["pushState", "replaceState"] as const) {
         const original = historyObj[methodName];
         if (typeof original === "function") {
-          historyObj[methodName] = function patchedHistory(...args: unknown[]): unknown {
+          const wrappedHistory = function patchedHistory(...args: unknown[]): unknown {
+            if (!active) {
+              return original.apply(this, args);
+            }
             const currentLocHref = win.location ? win.location.href : undefined;
             const prev = lastHref !== undefined && lastHref !== null ? lastHref : currentLocHref;
             const result = original.apply(this, args);
@@ -167,8 +180,11 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
             });
             return result;
           };
+          historyObj[methodName] = wrappedHistory;
           cleanups.push(() => {
-            historyObj[methodName] = original;
+            if (historyObj[methodName] === wrappedHistory) {
+              historyObj[methodName] = original;
+            }
           });
         }
       }
@@ -177,6 +193,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
   if (doc && typeof doc.addEventListener === "function" && typeof doc.removeEventListener === "function") {
     const clickListener = (rawEvent: unknown): void => {
+      if (!active) {
+        return;
+      }
       const ev = rawEvent as { target?: unknown } | undefined;
       hooks.onBreadcrumb({
         type: "ui",
@@ -199,7 +218,7 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       input: RequestInfo | URL,
       init?: RequestInit & { [SENTRACE_INTERNAL_FETCH_FLAG]?: boolean }
     ): Promise<Response> {
-      if (init && init[SENTRACE_INTERNAL_FETCH_FLAG]) {
+      if (!active || (init && init[SENTRACE_INTERNAL_FETCH_FLAG])) {
         return originalFetch.call(g, input, init);
       }
 
@@ -228,6 +247,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
       return originalFetch.call(g, input, init).then(
         (response) => {
+          if (!active) {
+            return response;
+          }
           let requestId: string | undefined;
           if (response && response.headers && typeof response.headers.get === "function") {
             const rawHeader = response.headers.get("x-request-id");
@@ -253,16 +275,18 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
           return response;
         },
         (networkErr: unknown) => {
-          hooks.onBreadcrumb({
-            type: "http",
-            category: "fetch",
-            level: "error",
-            data: {
-              method,
-              url: safeUrl,
-              error: networkErr instanceof Error ? networkErr.name : "NetworkError"
-            }
-          });
+          if (active) {
+            hooks.onBreadcrumb({
+              type: "http",
+              category: "fetch",
+              level: "error",
+              data: {
+                method,
+                url: safeUrl,
+                error: networkErr instanceof Error ? networkErr.name : "NetworkError"
+              }
+            });
+          }
           throw networkErr;
         }
       );
@@ -295,23 +319,31 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
     const origOpen = proto.open!;
     const origSend = proto.send!;
 
-    proto.open = function sentraceXhrOpen(
+    const wrappedOpen = function sentraceXhrOpen(
       this: Record<string, unknown>,
       method: string,
       url: string | URL,
       ...rest: unknown[]
     ): unknown {
-      this.__sentraceXhrMeta = {
-        method: String(method || "GET").toUpperCase(),
-        url: String(url || "")
-      };
+      if (active) {
+        this.__sentraceXhrMeta = {
+          method: String(method || "GET").toUpperCase(),
+          url: String(url || "")
+        };
+      }
       return origOpen.call(this, method, url, ...rest);
     };
 
-    proto.send = function sentraceXhrSend(this: Record<string, unknown>, body?: unknown): unknown {
+    const wrappedSend = function sentraceXhrSend(this: Record<string, unknown>, body?: unknown): unknown {
+      if (!active) {
+        return origSend.call(this, body);
+      }
       const meta = this.__sentraceXhrMeta as { method: string; url: string } | undefined;
       if (meta && !isInternalEndpoint(meta.url, hooks.endpointUrl)) {
         const onLoadEnd = (): void => {
+          if (!active) {
+            return;
+          }
           const status = typeof this.status === "number" ? this.status : undefined;
           const getHeader = this.getResponseHeader as ((name: string) => string | null) | undefined;
           let requestId: string | undefined;
@@ -349,13 +381,21 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       return origSend.call(this, body);
     };
 
+    proto.open = wrappedOpen;
+    proto.send = wrappedSend;
+
     cleanups.push(() => {
-      proto.open = origOpen;
-      proto.send = origSend;
+      if (proto.open === wrappedOpen) {
+        proto.open = origOpen;
+      }
+      if (proto.send === wrappedSend) {
+        proto.send = origSend;
+      }
     });
   }
 
   return () => {
+    active = false;
     for (const fn of cleanups.splice(0)) {
       try {
         fn();

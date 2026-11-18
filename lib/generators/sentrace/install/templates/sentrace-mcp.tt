@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+set -e
+
+APP_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$APP_ROOT"
+
+if [ -n "${HOME:-}" ]; then
+  for shim_dir in "$HOME/.asdf/shims" "$HOME/.local/share/mise/shims" "$HOME/.rbenv/shims"; do
+    if [ -d "$shim_dir" ]; then
+      case ":$PATH:" in
+        *":$shim_dir:"*) ;;
+        *) PATH="$shim_dir:$PATH" ;;
+      esac
+    fi
+  done
+  export PATH
+fi
+
+exec ruby -e '
+mcp_stdout = $stdout.dup
+mcp_stdout.sync = true
+$stdout.reopen($stderr)
+$stdout.sync = true
+
+app_root = Dir.pwd
+gemfile = File.expand_path("Gemfile", app_root)
+ENV["BUNDLE_GEMFILE"] ||= gemfile if File.exist?(gemfile)
+require File.expand_path("config/boot", app_root)
+require File.expand_path("config/environment", app_root)
+
+Sentrace::Mcp::StdioRunner.run(output: mcp_stdout, err_output: $stderr)
+' -- "$@"

@@ -53,7 +53,9 @@ RSpec.describe "sentrace:bootstrap Rake task and Sentrace::Bootstrapper" do
       expect(Sentrace::McpToken.authenticate("snt_mcp_0123456789abcdef0123456789abcdef")).to eq(token)
 
       [ first_output, second_output ].each do |out|
+        expect(out).to include("SENTRACE_FRONTEND_DSN=https://erp_pub_1234567890abcdef@errors.example.com/sentrace/#{project.id}")
         expect(out).to include("SENTRY_DSN=https://erp_pub_1234567890abcdef@errors.example.com/sentrace/#{project.id}")
+        expect(out).to include("optional overrides for cross-origin frontends or legacy sentry-ruby")
         expect(out).to include("prefix=snt_mcp_0123")
         expect(out).not_to include("snt_mcp_0123456789abcdef0123456789abcdef")
       end

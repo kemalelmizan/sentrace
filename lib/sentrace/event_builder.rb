@@ -16,6 +16,12 @@ module Sentrace
         new(config: config).build_message_event(message, scope: scope, level: level, **options)
       end
 
+      def any_in_app_frame?(exception, config: Sentrace.configuration)
+        return false unless exception.is_a?(Exception)
+
+        new(config: config).any_in_app_frame?(exception)
+      end
+
       def deep_stringify(value)
         case value
         when Hash
@@ -53,6 +59,10 @@ module Sentrace
       raw_event["message"] = message.to_s
       apply_scope_and_options!(raw_event, scope: scope, options: options)
       raw_event
+    end
+
+    def any_in_app_frame?(exception)
+      extract_frames(exception).any? { |frame| frame["in_app"] == true }
     end
 
     private
