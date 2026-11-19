@@ -254,10 +254,11 @@ module Sentrace
         end
 
         def build_environment_entry(env_def, in_worker_thread:)
+          safe_url = env_def.url ? Ingestion::Sanitizer.sanitize_url(env_def.url) : nil
           {
             "name" => env_def.name.to_s,
             "transport" => env_def.transport.to_s,
-            "url" => env_def.url,
+            "url" => safe_url,
             "timeout" => env_def.timeout,
             "status" => environment_status(env_def, in_worker_thread: in_worker_thread)
           }.compact

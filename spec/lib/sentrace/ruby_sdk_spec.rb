@@ -242,7 +242,7 @@ RSpec.describe "Sentrace Native Ruby SDK" do
       ActiveSupport::Notifications.instrument(
         "sql.active_record",
         name: "User Load",
-        sql: "SELECT \"users\".* FROM \"users\" WHERE \"users\".\"email\" = 'secret@example.com' AND \"users\".\"id\" = $1",
+        sql: "SELECT \"users\".* FROM \"users\" WHERE \"users\".\"email\" = 'secret@example.com' AND \"users\".\"note\" = $$raw_dollar_secret$$ AND \"users\".\"bio\" = $tag$tagged_dollar_secret$tag$ AND \"users\".\"id\" = $1",
         binds: [ "secret-bind-value" ],
         type_casted_binds: [ "secret-bind-value" ]
       ) { }
@@ -288,6 +288,8 @@ RSpec.describe "Sentrace Native Ruby SDK" do
       expect(sql_crumb["message"]).to eq("User Load")
       expect(sql_crumb.dig("data", "statement")).to include("'?'")
       expect(JSON.generate(sql_crumb)).not_to include("secret@example.com")
+      expect(JSON.generate(sql_crumb)).not_to include("raw_dollar_secret")
+      expect(JSON.generate(sql_crumb)).not_to include("tagged_dollar_secret")
       expect(JSON.generate(sql_crumb)).not_to include("secret-bind-value")
 
       http_crumb = crumbs[2]

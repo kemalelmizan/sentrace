@@ -5,6 +5,7 @@ module Sentrace
   class EventBuilder
     SDK_NAME = "sentrace.ruby"
     MAX_CAUSE_DEPTH = 5
+    MAX_BACKTRACE_LINE_BYTES = 4096
     BACKTRACE_LINE_REGEX = /\A(?<file>.+?):(?<line>\d+)(?::in [`'](?<fn>.+)'|:in (?<fn2>.+))?\z/
 
     class << self
@@ -211,6 +212,8 @@ module Sentrace
       end
 
       def parse_backtrace_line(line, app_root)
+        return nil if line.bytesize > MAX_BACKTRACE_LINE_BYTES
+
         match = BACKTRACE_LINE_REGEX.match(line)
         return nil unless match
 

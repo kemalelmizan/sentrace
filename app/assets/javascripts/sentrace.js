@@ -24,21 +24,36 @@ function nullishCoalesce   (value                      , fallback   )    {
 const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "password",
   "passwd",
+  "passcode",
   "secret",
+  "secret_key",
+  "secret-key",
+  "secretkey",
   "token",
   "access_token",
   "refresh_token",
   "id_token",
   "api_key",
+  "api-key",
   "apikey",
+  "private_key",
+  "private-key",
+  "privatekey",
+  "access_key",
+  "access-key",
+  "accesskey",
   "authorization",
   "cookie",
   "credit_card",
+  "credit-card",
   "card_number",
+  "card-number",
   "cvv",
   "cvc",
   "sentry_secret"
 ];
+
+const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/;
 
 const AUTH_SESSION_EXACT_KEYS = [
   "session",
@@ -51,6 +66,15 @@ const AUTH_SESSION_EXACT_KEYS = [
 ];
 
 const AUTH_SESSION_KEY_REGEX = /^_(?:[a-z0-9_]+_)?session$|(?:^|[_.-])session[_.-]?token$/;
+const SAFE_REQUEST_ID_REGEX = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function normalizeSafeRequestId(rawValue         )                     {
+  if (typeof rawValue !== "string") {
+    return undefined;
+  }
+  const trimmed = rawValue.trim();
+  return SAFE_REQUEST_ID_REGEX.test(trimmed) ? trimmed : undefined;
+}
 
 function parseDsn(rawDsn                           )                   {
   if (!rawDsn || typeof rawDsn !== "string") {
@@ -80,11 +104,25 @@ function parseDsn(rawDsn                           )                   {
   }
 
   const projectId = segments.pop() ;
+  if (!/^[1-9]\d*$/.test(projectId)) {
+    return null;
+  }
+
+  let decodedPublicKey        ;
+  try {
+    decodedPublicKey = decodeURIComponent(uri.username);
+  } catch (_err) {
+    return null;
+  }
+  if (!decodedPublicKey || /[\s\x00-\x1f\x7f]/.test(decodedPublicKey)) {
+    return null;
+  }
+
   const pathPrefix = segments.length > 0 ? `/${segments.join("/")}` : "";
 
   return {
     protocol,
-    publicKey: decodeURIComponent(uri.username),
+    publicKey: decodedPublicKey,
     host: uri.hostname,
     port: uri.port || undefined,
     pathPrefix,
@@ -131,6 +169,9 @@ function scrubUrl(
       return false;
     }
     if (AUTH_SESSION_EXACT_KEYS.indexOf(lower) !== -1 || AUTH_SESSION_KEY_REGEX.test(lower)) {
+      return true;
+    }
+    if (SENSITIVE_BOUNDED_QUERY_KEY_REGEX.test(lower)) {
       return true;
     }
     return redactPatterns.some((term) => lower.includes(term));
@@ -384,6 +425,10 @@ function extractExceptionChain(
 }
 
 // --- scope.ts ---
+function isUnsafeScopeKey(key        )          {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
 class Scope                      {
 
   constructor() {
@@ -397,13 +442,16 @@ class Scope                      {
   }
 
   setTag(key        , value                           )       {
-    this.tags[String(key)] = String(value);
+    const normalizedKey = String(key);
+    if (!isUnsafeScopeKey(normalizedKey)) {
+      this.tags[normalizedKey] = String(value);
+    }
     return this;
   }
 
   setTags(tags                                           )       {
     for (const [k, v] of Object.entries(tags)) {
-      if (v !== undefined && v !== null) {
+      if (!isUnsafeScopeKey(k) && v !== undefined && v !== null) {
         this.tags[k] = String(v);
       }
     }
@@ -411,6 +459,9 @@ class Scope                      {
   }
 
   getTag(key        )                     {
+    if (isUnsafeScopeKey(key) || !Object.prototype.hasOwnProperty.call(this.tags, key)) {
+      return undefined;
+    }
     return this.tags[key];
   }
 
@@ -420,21 +471,36 @@ class Scope                      {
   }
 
   setContext(name        , context                                )       {
+    if (isUnsafeScopeKey(name)) {
+      return this;
+    }
     if (context === null) {
       delete this.contexts[name];
     } else {
-      this.contexts[name] = { ...context };
+      const cleaned                          = {};
+      for (const [k, v] of Object.entries(context)) {
+        if (!isUnsafeScopeKey(k)) {
+          cleaned[k] = v;
+        }
+      }
+      this.contexts[name] = cleaned;
     }
     return this;
   }
 
   setExtra(key        , extra         )       {
-    this.extra[key] = extra;
+    if (!isUnsafeScopeKey(key)) {
+      this.extra[key] = extra;
+    }
     return this;
   }
 
   setExtras(extras                         )       {
-    Object.assign(this.extra, extras);
+    for (const [k, v] of Object.entries(extras)) {
+      if (!isUnsafeScopeKey(k)) {
+        this.extra[k] = v;
+      }
+    }
     return this;
   }
 
@@ -559,11 +625,16 @@ class Scope                      {
 
     const mergedContexts                                          = {};
     for (const [k, v] of Object.entries(this.contexts)) {
-      mergedContexts[k] = { ...v };
+      if (!isUnsafeScopeKey(k)) {
+        mergedContexts[k] = { ...v };
+      }
     }
     if (event.contexts) {
       for (const [k, v] of Object.entries(event.contexts)) {
-        mergedContexts[k] = { ...(mergedContexts[k] ? mergedContexts[k] : {}), ...v };
+        if (!isUnsafeScopeKey(k) && v && typeof v === "object") {
+          const existing = Object.prototype.hasOwnProperty.call(mergedContexts, k) ? mergedContexts[k] : undefined;
+          mergedContexts[k] = { ...(existing ? existing : {}), ...v };
+        }
       }
     }
     if (Object.keys(mergedContexts).length > 0) {
@@ -969,8 +1040,7 @@ function installBrowserInstrumentation(hooks                             )      
           }
           let requestId                    ;
           if (response && response.headers && typeof response.headers.get === "function") {
-            const rawHeader = response.headers.get("x-request-id");
-            requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+            requestId = normalizeSafeRequestId(response.headers.get("x-request-id"));
           }
           const status = response && typeof response.status === "number" ? response.status : undefined;
 
@@ -1061,8 +1131,7 @@ function installBrowserInstrumentation(hooks                             )      
           let requestId                    ;
           if (typeof getHeader === "function") {
             try {
-              const rawHeader = getHeader.call(this, "x-request-id");
-              requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+              requestId = normalizeSafeRequestId(getHeader.call(this, "x-request-id"));
             } catch (_err) {
               requestId = undefined;
             }
@@ -1180,7 +1249,7 @@ function readRailsMeta(customDoc          )                  {
     dsn: readMetaTagContent(doc, "sentrace-dsn"),
     environment: readMetaTagContent(doc, "sentrace-environment"),
     release: readMetaTagContent(doc, "sentrace-release"),
-    requestId: readMetaTagContent(doc, "sentrace-request-id")
+    requestId: normalizeSafeRequestId(readMetaTagContent(doc, "sentrace-request-id"))
   };
 }
 
@@ -1237,7 +1306,9 @@ function installRailsTurboInstrumentation(
     const rawUrl =
       detail && detail.url ? String(detail.url) : detail && detail.request ? detail.request.url : undefined;
     const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
-    const requestId = readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id");
+    const requestId = normalizeSafeRequestId(
+      readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id")
+    );
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }
@@ -1277,7 +1348,9 @@ function installRailsTurboInstrumentation(
     const response = ev && ev.detail ? ev.detail.response : undefined;
     const status = response ? response.status : undefined;
     const safeUrl = scrubUrl(response ? response.url : undefined, hooks.redactFields, hooks.allowFields);
-    const requestId = readHeaderSafely(response ? response.headers : undefined, "x-request-id");
+    const requestId = normalizeSafeRequestId(
+      readHeaderSafely(response ? response.headers : undefined, "x-request-id")
+    );
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }

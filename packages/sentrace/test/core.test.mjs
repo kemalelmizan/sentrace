@@ -25,12 +25,19 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
 
   assert.equal(parseDsn("not-a-dsn"), null);
   assert.equal(parseDsn("https://errors.example.com/42"), null);
+  assert.equal(parseDsn("https://pub_abc@errors.example.com/sentrace/../../admin"), null);
+  assert.equal(parseDsn("https://pub_abc@errors.example.com/sentrace/not-a-number"), null);
+  assert.equal(parseDsn("javascript://pub_abc@errors.example.com/42"), null);
 
   assert.equal(
     scrubUrl("https://user:pass@shop.example.com/reset?token=secret123&step=2&custom_pin=9999", ["custom_pin"]),
     "https://shop.example.com/reset?token=[REDACTED]&step=2&custom_pin=[REDACTED]"
   );
   assert.equal(scrubUrl("/checkout?api_key=xyz&ok=1"), "/checkout?api_key=[REDACTED]&ok=1");
+  assert.equal(
+    scrubUrl("/login?api-key=k1&private-key=k2&login-otp=123456&user_ssn=999&classname=btn&rootpath=/app"),
+    "/login?api-key=[REDACTED]&private-key=[REDACTED]&login-otp=[REDACTED]&user_ssn=[REDACTED]&classname=btn&rootpath=%2Fapp"
+  );
   assert.equal(
     scrubUrl(
       "/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=sess_1&_myapp_session=cookie_2&user_session_token=tok_3&TOKEN_PRESENT=1&access_token=sec_4",

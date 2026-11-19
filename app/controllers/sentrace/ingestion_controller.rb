@@ -5,6 +5,8 @@ module Sentrace
   class IngestionController < ApplicationController
     GZIP_CHUNK_BYTES = 16 * 1024
     HEADER_PEEK_BYTES = 16 * 1024
+    MAX_AUTH_HEADER_BYTES = 4 * 1024
+    MAX_AUTH_HEADER_PAIRS = 16
 
     before_action :apply_cors_headers
 
@@ -23,8 +25,30 @@ module Sentrace
         return render json: { error: "Payload too large" }, status: 413
       end
 
+      project_id = parse_positive_project_id(params[:project_id])
+      unless project_id
+        return render json: { error: "Unauthorized" }, status: :unauthorized
+      end
+
+      cred_source, pub_key, secret_key = extract_header_or_query_credentials
+      if cred_source == :invalid
+        return render json: { error: "Unauthorized" }, status: :unauthorized
+      end
+
+      matched_key = nil
+      if cred_source == :supplied
+        matched_key = ProjectKey.authenticate_public_key(
+          project_id: project_id,
+          public_key: pub_key,
+          secret: secret_key
+        )
+        unless matched_key
+          return render json: { error: "Unauthorized" }, status: :unauthorized
+        end
+      end
+
       raw_bytes = read_bounded_stream(request.body, max_size)
-      matched_key = authenticate_request(raw_bytes, max_size: max_size)
+      matched_key ||= authenticate_envelope_dsn(raw_bytes, project_id: project_id, max_size: max_size)
       unless matched_key
         return render json: { error: "Unauthorized" }, status: :unauthorized
       end
@@ -103,55 +127,68 @@ module Sentrace
         raise EnvelopeParseError, "Malformed gzip stream"
       end
 
-      def authenticate_request(raw_bytes, max_size:)
-        project_id = Integer(params[:project_id].to_s, 10)
-        return nil if project_id <= 0
+      def parse_positive_project_id(raw_project_id)
+        return nil unless raw_project_id.is_a?(String) || raw_project_id.is_a?(Integer)
 
-        pub_key, secret_key = extract_credentials(raw_bytes, project_id: project_id, max_size: max_size)
-        return nil if pub_key.blank?
+        str = raw_project_id.to_s
+        return nil if str.bytesize > 20
 
-        ProjectKey.authenticate_public_key(
-          project_id: project_id,
-          public_key: pub_key,
-          secret: secret_key
-        )
+        parsed = Integer(str, 10)
+        parsed.positive? ? parsed : nil
       rescue ArgumentError, TypeError
         nil
       end
 
-      def extract_credentials(raw_bytes, project_id:, max_size:)
+      def extract_header_or_query_credentials
         auth_header = request.headers["X-Sentry-Auth"].presence || sentry_authorization_header
         if auth_header
+          return [ :invalid, nil, nil ] if auth_header.bytesize > MAX_AUTH_HEADER_BYTES
+
           parsed = parse_sentry_auth_header(auth_header)
-          return [ parsed["sentry_key"], parsed["sentry_secret"] ] if parsed["sentry_key"].present?
+          if parsed["sentry_key"].present?
+            return [ :supplied, parsed["sentry_key"], parsed["sentry_secret"] ]
+          end
         end
 
-        if request.query_parameters["sentry_key"].present?
-          return [
-            request.query_parameters["sentry_key"].to_s,
-            request.query_parameters["sentry_secret"]&.to_s
-          ]
+        if request.query_parameters.key?("sentry_key")
+          raw_key = request.query_parameters["sentry_key"]
+          raw_secret = request.query_parameters["sentry_secret"]
+          if !raw_key.is_a?(String) || (!raw_secret.nil? && !raw_secret.is_a?(String))
+            return [ :invalid, nil, nil ]
+          end
+
+          if raw_key.present?
+            return [ :supplied, raw_key, raw_secret ]
+          end
         end
 
+        [ :none, nil, nil ]
+      end
+
+      def authenticate_envelope_dsn(raw_bytes, project_id:, max_size:)
         dsn_string = extract_dsn_from_envelope_prefix(raw_bytes, max_size: max_size)
-        return [ nil, nil ] if dsn_string.blank?
+        return nil if dsn_string.blank?
 
         parsed_dsn = Dsn.parse(dsn_string)
-        return [ nil, nil ] unless parsed_dsn.project_id.to_i == project_id
+        return nil unless parsed_dsn.project_id.to_i == project_id
 
-        [ parsed_dsn.public_key, parsed_dsn.secret_key ]
+        ProjectKey.authenticate_public_key(
+          project_id: project_id,
+          public_key: parsed_dsn.public_key,
+          secret: parsed_dsn.secret_key
+        )
       rescue InvalidDsnError
-        [ nil, nil ]
+        nil
       end
 
       def sentry_authorization_header
         raw = request.headers["Authorization"].to_s
-        raw if raw.match?(/\ASentry\s+/i)
+        raw if raw.bytesize <= MAX_AUTH_HEADER_BYTES && raw.match?(/\ASentry\s+/i)
       end
 
       def parse_sentry_auth_header(raw_header)
         stripped = raw_header.to_s.sub(/\ASentry\s+/i, "")
-        stripped.split(",").each_with_object({}) do |pair, acc|
+        stripped.split(",", MAX_AUTH_HEADER_PAIRS + 1).first(MAX_AUTH_HEADER_PAIRS).each_with_object({}) do |pair, acc|
           key, val = pair.split("=", 2)
           next if key.nil? || val.nil?
 

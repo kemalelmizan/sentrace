@@ -25,6 +25,8 @@ RSpec.describe Sentrace::Configuration do
       expect(config.retention_batch_size).to eq(1_000)
       expect(config.internal_authenticator).to be_nil
       expect(config.max_envelope_size).to eq(1.megabyte)
+      expect(config.max_events_per_envelope).to eq(10)
+      expect(config.max_envelope_items).to eq(50)
       expect(config.max_message_bytes).to eq(4.kilobytes)
       expect(config.max_stack_frames).to eq(50)
       expect(config.max_breadcrumbs).to eq(20)
@@ -312,6 +314,35 @@ RSpec.describe Sentrace::Configuration do
           config.environments = { weird: { transport: :websocket } }
         end
       }.to raise_error(Sentrace::ConfigurationError, /unsupported transport/)
+    end
+
+    it "validates max_events_per_envelope, max_envelope_items, and rejects userinfo or control chars in remote MCP settings" do
+      expect {
+        Sentrace.configure { |config| config.max_events_per_envelope = 0 }
+      }.to raise_error(Sentrace::ConfigurationError, /max_events_per_envelope must be a positive Integer/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.max_envelope_items = -1 }
+      }.to raise_error(Sentrace::ConfigurationError, /max_envelope_items must be a positive Integer/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure do |config|
+          config.environments = {
+            staging: { transport: :http, url: "https://user:pass@staging.example.com/sentrace/mcp", token: "tok" }
+          }
+        end
+      }.to raise_error(Sentrace::ConfigurationError, /must not contain embedded credentials or fragments/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure do |config|
+          config.environments = {
+            staging: { transport: :http, url: "https://staging.example.com/sentrace/mcp", token: "bad\r\ntoken" }
+          }
+        end
+      }.to raise_error(Sentrace::ConfigurationError, /token must not contain whitespace or control characters/)
     end
   end
 end

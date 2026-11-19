@@ -18,16 +18,16 @@ Remote MCP authentication SHALL use dedicated `snt_mcp_` bearer tokens stored ex
 - **THEN** only `token_prefix` and the SHA-256 `token_digest` are persisted, `McpToken.authenticate` succeeds for that token, repeated calls return the existing active record without creating duplicates, and short, unprefixed, or revoked tokens raise `ArgumentError`
 
 ### Requirement: Authenticated Streamable HTTP MCP endpoint with HTTPS enforcement
-Each Sentrace deployment SHALL expose `POST /mcp` (mounted e.g. at `/sentrace/mcp`) speaking stateless MCP Streamable HTTP, emitting `Cache-Control: no-store` on all responses, requiring valid `Authorization: Bearer <token>` authentication before payload processing, and rejecting non-HTTPS requests on non-loopback hosts.
+Each Sentrace deployment SHALL expose `POST /mcp` speaking stateless MCP Streamable HTTP, emitting defensive security headers (`Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy`, `Referrer-Policy`) on all responses, requiring valid `Authorization: Bearer <token>` authentication, rejecting cross-origin browser requests with HTTP `403`, and rejecting non-HTTPS requests unless both `request.host` and peer IP are loopback.
 
 #### Scenario: Valid bearer token executes MCP tool calls over HTTPS Streamable HTTP
 - **GIVEN** an active MCP bearer token on a deployment configured with `deployment_environment = "staging"`
 - **WHEN** a client posts a Streamable HTTP `tools/call` request to `https://staging.example.com/sentrace/mcp` with `Authorization: Bearer <token>`
-- **THEN** the endpoint responds with HTTP `200`, `Cache-Control: no-store`, and MCP JSON-RPC results attributed to `"staging"`
+- **THEN** the endpoint responds with HTTP `200`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and MCP JSON-RPC results attributed to `"staging"`
 
-#### Scenario: Unauthenticated or non-HTTPS remote requests are rejected
-- **WHEN** a client posts to `https://staging.example.com/sentrace/mcp` without a valid bearer token or to `http://staging.example.com/sentrace/mcp` over plain HTTP
-- **THEN** unauthenticated requests receive HTTP `401` and plain-HTTP non-loopback requests receive HTTP `403`, both carrying `Cache-Control: no-store` without executing MCP handlers
+#### Scenario: Unauthenticated, non-HTTPS remote, spoofed loopback Host, or cross-origin requests are rejected
+- **WHEN** a client posts to `https://staging.example.com/sentrace/mcp` without a valid bearer token, to `http://staging.example.com/sentrace/mcp` over plain HTTP, over plain HTTP with `Host: localhost` from a non-loopback `REMOTE_ADDR`, or with a mismatched `Origin` header
+- **THEN** unauthenticated requests receive HTTP `401` and plain-HTTP non-loopback or cross-origin requests receive HTTP `403`, carrying `Cache-Control: no-store` without executing MCP handlers
 
 ### Requirement: Concurrent cross-environment federation and result merging
 The local MCP router SHALL route requests to a selected remote environment or concurrently across all configured environments (`environment: "all"`), merging compatible project, issue, event, and trend results while preserving per-record environment attribution and correlating matching issue fingerprints across environments.

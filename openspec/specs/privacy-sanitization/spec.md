@@ -13,7 +13,7 @@ Before persisting any event, sanitization SHALL strip request bodies, cookies, a
 - **THEN** the persisted `event_data["request"]` retains only sanitized `url` and `method` and excludes bodies, cookies, auth headers, IPs, and environment variables
 
 ### Requirement: Recursive field redaction and payment/credential scrubbing
-Sanitization SHALL recursively scrub tags, breadcrumb data, contexts, and URL query keys matching `redact_fields`, default credential/IP patterns, or auth session keys (`session`, `session_id`, `_session_id`, `rack.session`, `_<app>_session`, `*_session_token`) unless exempted case-insensitively by `allow_fields`, MUST preserve non-auth `*_session_id` domain keys, and SHALL always mask Bearer and Luhn card patterns.
+Sanitization SHALL recursively scrub tags, breadcrumb data, contexts, and URL query keys matching `redact_fields`, default underscore/hyphenated credential and IP patterns, bounded `ssn`/`otp`/`totp` keys, or auth session keys unless exempted by `allow_fields`, MUST preserve non-auth `*_session_id` domain keys, and SHALL always mask Bearer/Basic headers, URI passwords, JWTs, API/cloud tokens, PEM private keys, and Luhn card numbers in text.
 
 #### Scenario: Nested context and tag values matching redact_fields are masked
 - **WHEN** an event carries `tags: { "api_token" => "secret123", "component" => "auth" }` and nested context `{ "payment" => { "password" => "hunter2", "credit_card" => "4111-1111-1111-1111" } }`

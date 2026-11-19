@@ -6,10 +6,15 @@ module Sentrace
       ParsedEnvelope = Data.define(:headers, :events, :discarded_item_types)
 
       MAX_HEADER_LINE_BYTES = 16 * 1024
+      MAX_JSON_NESTING = 64
 
       class << self
-        def parse(raw_body)
-          new.parse(raw_body)
+        def parse(
+          raw_body,
+          max_items: Configuration::DEFAULT_MAX_ENVELOPE_ITEMS,
+          max_events: Configuration::DEFAULT_MAX_EVENTS_PER_ENVELOPE
+        )
+          new(max_items: max_items, max_events: max_events).parse(raw_body)
         end
 
         def extract_header_dsn(raw_body)
@@ -20,11 +25,22 @@ module Sentrace
           first_line = newline_idx ? binary.byteslice(0, newline_idx) : binary
           return nil if first_line.bytesize > MAX_HEADER_LINE_BYTES
 
-          parsed = JSON.parse(first_line.force_encoding(Encoding::UTF_8))
-          parsed.is_a?(Hash) ? parsed["dsn"] : nil
-        rescue JSON::ParserError, EncodingError
+          utf8 = first_line.force_encoding(Encoding::UTF_8)
+          return nil unless utf8.valid_encoding?
+
+          parsed = JSON.parse(utf8, max_nesting: MAX_JSON_NESTING)
+          parsed.is_a?(Hash) && parsed["dsn"].is_a?(String) ? parsed["dsn"] : nil
+        rescue JSON::ParserError, JSON::NestingError, EncodingError
           nil
         end
+      end
+
+      def initialize(
+        max_items: Configuration::DEFAULT_MAX_ENVELOPE_ITEMS,
+        max_events: Configuration::DEFAULT_MAX_EVENTS_PER_ENVELOPE
+      )
+        @max_items = max_items
+        @max_events = max_events
       end
 
       def parse(raw_body)
@@ -44,6 +60,7 @@ module Sentrace
         envelope_headers = parse_json_object(header_line, "envelope header")
         events = []
         discarded = []
+        item_count = 0
 
         while cursor < total
           # Skip trailing newline(s) at the end of an envelope
@@ -58,6 +75,11 @@ module Sentrace
           item_header_line, cursor = read_line(buffer, cursor, total)
           break if item_header_line.nil? || item_header_line.empty?
 
+          item_count += 1
+          if @max_items && item_count > @max_items
+            raise PayloadTooLargeError, "Envelope exceeds max_envelope_items (#{@max_items})"
+          end
+
           item_header = parse_json_object(item_header_line, "envelope item header")
           item_type = (item_header["type"] || "event").to_s
 
@@ -68,6 +90,9 @@ module Sentrace
             if event_hash["type"].to_s == "transaction"
               discarded << "transaction"
             else
+              if @max_events && events.size >= @max_events
+                raise PayloadTooLargeError, "Envelope exceeds max_events_per_envelope (#{@max_events})"
+              end
               events << event_hash
             end
           else
@@ -124,18 +149,22 @@ module Sentrace
         end
 
         def parse_json_object(raw_bytes, label)
+          if label != "event payload" && raw_bytes.bytesize > MAX_HEADER_LINE_BYTES
+            raise EnvelopeParseError, "Oversized #{label}"
+          end
+
           utf8 = raw_bytes.dup.force_encoding(Encoding::UTF_8)
           unless utf8.valid_encoding?
             raise EnvelopeParseError, "Invalid UTF-8 encoding in #{label}"
           end
 
-          parsed = JSON.parse(utf8)
+          parsed = JSON.parse(utf8, max_nesting: MAX_JSON_NESTING)
           unless parsed.is_a?(Hash)
             raise EnvelopeParseError, "Expected JSON object for #{label}"
           end
 
           parsed
-        rescue JSON::ParserError
+        rescue JSON::ParserError, JSON::NestingError
           raise EnvelopeParseError, "Invalid JSON in #{label}"
         end
     end

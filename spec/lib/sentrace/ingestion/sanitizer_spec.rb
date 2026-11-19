@@ -295,5 +295,63 @@ RSpec.describe Sentrace::Ingestion::Sanitizer do
       expect(user_payload).not_to have_key("ip_address")
       expect(user_payload).not_to have_key("roles")
     end
+
+    it "redacts hyphenated secret/IP keys, delimiter-bounded ssn/otp/totp, inline cloud/API/PEM secrets, and post-hook forbidden contexts" do
+      config.sanitizer = lambda do |data|
+        data.merge(
+          "contexts" => (data["contexts"] || {}).merge(
+            "env" => { "SECRET_KEY_BASE" => "reintroduced-secret" },
+            "safe_ctx" => { "ok" => true }
+          )
+        )
+      end
+
+      jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+      pem = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
+
+      normalized = build_normalized(
+        "message" => "Leak check Basic dXNlcjpwYXNz postgres://admin:dbpass@db.internal:5432/prod redis://:redispass@cache.internal:6379/0 #{jwt} snt_mcp_abcdef0123456789 AKIAIOSFODNN7EXAMPLE ghp_1234567890abcdefghijklmnopqrstuvwxyz sk_live_1234567890abcdef #{pem}",
+        "tags" => {
+          "x-api-key" => "ak_secret",
+          "private-key" => "pk_secret",
+          "x-forwarded-for" => "198.51.100.7",
+          "user_ssn" => "123-45-6789",
+          "login-otp" => "654321",
+          "mfa.totp" => "112233",
+          "classname" => "CheckoutController",
+          "rootpath" => "/srv/app"
+        }
+      )
+
+      sanitized = described_class.sanitize(normalized, project_id: 1, config: config, secret_base: nil)
+      data = sanitized.event_data
+      msg = data["message"]
+
+      expect(msg).to include("Basic [REDACTED]")
+      expect(msg).to include("postgres://[REDACTED]@db.internal:5432/prod")
+      expect(msg).to include("redis://[REDACTED]@cache.internal:6379/0")
+      expect(msg).not_to include("dXNlcjpwYXNz")
+      expect(msg).not_to include("dbpass")
+      expect(msg).not_to include("redispass")
+      expect(msg).not_to include("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+      expect(msg).not_to include("snt_mcp_abcdef0123456789")
+      expect(msg).not_to include("AKIAIOSFODNN7EXAMPLE")
+      expect(msg).not_to include("ghp_1234567890abcdefghijklmnopqrstuvwxyz")
+      expect(msg).not_to include("sk_live_1234567890abcdef")
+      expect(msg).not_to include("MIIEvgIBADANBgkqhkiG9w0BAQEFAASC")
+
+      expect(data["tags"]).to eq(
+        "x-api-key" => "[REDACTED]",
+        "private-key" => "[REDACTED]",
+        "x-forwarded-for" => "[REDACTED]",
+        "user_ssn" => "[REDACTED]",
+        "login-otp" => "[REDACTED]",
+        "mfa.totp" => "[REDACTED]",
+        "classname" => "CheckoutController",
+        "rootpath" => "/srv/app"
+      )
+
+      expect(data["contexts"]).to eq("safe_ctx" => { "ok" => true })
+    end
   end
 end

@@ -1,11 +1,11 @@
 module Sentrace
   class ApplicationController < ActionController::API
-    before_action :set_no_store_cache_control
-    after_action :set_no_store_cache_control
+    before_action :apply_security_headers
+    after_action :apply_security_headers
 
     private
-      def set_no_store_cache_control
-        response.set_header("Cache-Control", "no-store")
+      def apply_security_headers
+        RequestSecurity.apply_security_headers!(response)
       end
   end
 end

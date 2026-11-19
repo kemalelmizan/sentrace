@@ -1,4 +1,5 @@
 require "rails_helper"
+require "zlib"
 
 RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
   after { Sentrace.reset_configuration! }
@@ -100,5 +101,255 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
     }.to raise_error(Sentrace::McpInvalidParamsError)
 
     expect(Sentrace::Event.count).to eq(105)
+  end
+
+  it "emits strict defensive HTTP security headers across ingestion, MCP, and internal endpoints" do
+    expected_headers = {
+      "Cache-Control" => "no-store",
+      "X-Content-Type-Options" => "nosniff",
+      "X-Frame-Options" => "DENY",
+      "Content-Security-Policy" => "default-src 'none'; frame-ancestors 'none'",
+      "Referrer-Policy" => "no-referrer"
+    }
+
+    envelope = "{\"event_id\":\"11112222333344445555666677778888\"}\n{\"type\":\"event\"}\n{\"message\":\"hdr check\"}\n"
+    post "/sentrace/api/#{project.id}/envelope",
+      params: envelope,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(:ok)
+    expected_headers.each { |k, v| expect(response.headers[k]).to eq(v) }
+
+    post "https://staging.example.com/sentrace/mcp",
+      params: JSON.generate(jsonrpc: "2.0", id: 1, method: "tools/list", params: {}),
+      headers: {
+        "Authorization" => "Bearer #{mcp_raw_token}",
+        "Content-Type" => "application/json",
+        "Accept" => "application/json, text/event-stream"
+      }
+    expect(response).to have_http_status(:ok)
+    expected_headers.each { |k, v| expect(response.headers[k]).to eq(v) }
+
+    get "/sentrace/internal/projects"
+    expect(response).to have_http_status(:unauthorized)
+    expected_headers.each { |k, v| expect(response.headers[k]).to eq(v) }
+  end
+
+  it "rejects spoofed loopback Host headers from external IPs and cross-origin browser requests on /sentrace/mcp" do
+    rpc_body = JSON.generate(jsonrpc: "2.0", id: 1, method: "tools/list", params: {})
+    base_mcp_headers = {
+      "Authorization" => "Bearer #{mcp_raw_token}",
+      "Content-Type" => "application/json",
+      "Accept" => "application/json, text/event-stream"
+    }
+
+    post "http://localhost/sentrace/mcp",
+      params: rpc_body,
+      headers: base_mcp_headers.merge("REMOTE_ADDR" => "203.0.113.10")
+    expect(response).to have_http_status(:forbidden)
+
+    post "http://127.0.0.1/sentrace/mcp",
+      params: rpc_body,
+      headers: base_mcp_headers.merge("REMOTE_ADDR" => "203.0.113.10")
+    expect(response).to have_http_status(:forbidden)
+
+    post "https://staging.example.com/sentrace/mcp",
+      params: rpc_body,
+      headers: base_mcp_headers.merge("Origin" => "https://evil.example.com")
+    expect(response).to have_http_status(:forbidden)
+
+    post "https://staging.example.com/sentrace/mcp",
+      params: rpc_body,
+      headers: base_mcp_headers.merge("Origin" => "null")
+    expect(response).to have_http_status(:forbidden)
+
+    post "https://staging.example.com/sentrace/mcp",
+      params: rpc_body,
+      headers: base_mcp_headers.merge("Sec-Fetch-Site" => "cross-site")
+    expect(response).to have_http_status(:forbidden)
+  end
+
+  it "enforces CSRF, Origin, parameter scalar validation, and stats range bounds on /sentrace/internal/*" do
+    Sentrace.configure do |config|
+      config.internal_authenticator = ->(req) {
+        req.headers["Cookie"].to_s.include?("admin_session=valid") ||
+          req.headers["Authorization"] == "Bearer #{mcp_raw_token}"
+      }
+    end
+
+    # Cross-origin browser request is blocked even with valid Cookie or Bearer auth
+    get "https://app.example.com/sentrace/internal/projects",
+      headers: {
+        "Authorization" => "Bearer #{mcp_raw_token}",
+        "Origin" => "https://evil.example.com"
+      }
+    expect(response).to have_http_status(:forbidden)
+
+    # Cookie-authenticated form POST without Origin / JSON / X-CSRF-Token is blocked as CSRF
+    post "https://app.example.com/sentrace/internal/projects",
+      params: { slug: "csrf-blocked" },
+      headers: { "Cookie" => "admin_session=valid" }
+    expect(response).to have_http_status(:forbidden)
+    expect(Sentrace::Project.find_by(slug: "csrf-blocked")).to be_nil
+
+    # Cookie-authenticated JSON POST succeeds
+    post "https://app.example.com/sentrace/internal/projects",
+      params: JSON.generate(slug: "cookie-json-ok"),
+      headers: {
+        "Cookie" => "admin_session=valid",
+        "Content-Type" => "application/json"
+      }
+    expect(response).to have_http_status(:created)
+
+    # Cookie-authenticated POST with verified same-origin Origin succeeds
+    post "https://app.example.com/sentrace/internal/projects",
+      params: { slug: "cookie-origin-ok" },
+      headers: {
+        "Cookie" => "admin_session=valid",
+        "Origin" => "https://app.example.com"
+      }
+    expect(response).to have_http_status(:created)
+
+    # Cookie-authenticated POST with X-CSRF-Token succeeds
+    post "https://app.example.com/sentrace/internal/projects",
+      params: { slug: "cookie-csrf-token-ok" },
+      headers: {
+        "Cookie" => "admin_session=valid",
+        "X-CSRF-Token" => "host-verified-token"
+      }
+    expect(response).to have_http_status(:created)
+
+    # Nested Hash/Array parameters return 422 instead of 500 ForbiddenAttributesError / TypeError
+    auth_hdr = { "Authorization" => "Bearer #{mcp_raw_token}" }
+    patch "/sentrace/internal/projects/#{project.id}",
+      params: { name: { nested: "bad" } },
+      headers: auth_hdr
+    expect(response).to have_http_status(422)
+
+    get "/sentrace/internal/issues",
+      params: { status: [ "unresolved" ] },
+      headers: auth_hdr
+    expect(response).to have_http_status(422)
+
+    # Out-of-range stats days return 422 instead of 500 RangeError / OOM
+    get "/sentrace/internal/stats",
+      params: { days: "99999999999999999999" },
+      headers: auth_hdr
+    expect(response).to have_http_status(422)
+
+    get "/sentrace/internal/stats",
+      params: { days: "0" },
+      headers: auth_hdr
+    expect(response).to have_http_status(422)
+  end
+
+  it "pre-authenticates ingestion headers before gzip inflation and enforces item, event, nesting, and field bounds" do
+    compressed_payload = Zlib.gzip("{\"event_id\":\"11112222333344445555666677778888\"}\n{\"type\":\"event\"}\n{\"message\":\"nope\"}\n")
+    expect(Zlib::GzipReader).not_to receive(:new)
+
+    post "/sentrace/api/#{project.id}/envelope",
+      params: compressed_payload,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "Content-Encoding" => "gzip",
+        "X-Sentry-Auth" => "Sentry sentry_key=wrong_key"
+      }
+    expect(response).to have_http_status(:unauthorized)
+
+    post "/sentrace/api/0/envelope",
+      params: compressed_payload,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "Content-Encoding" => "gzip",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(:unauthorized)
+
+    post "/sentrace/api/#{project.id}/envelope?sentry_key[]=#{dsn_key.public_key}",
+      params: compressed_payload,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "Content-Encoding" => "gzip"
+      }
+    expect(response).to have_http_status(:unauthorized)
+
+    # Enforce max_events_per_envelope (413) and max_envelope_items (413)
+    Sentrace.configure do |config|
+      config.max_events_per_envelope = 1
+      config.max_envelope_items = 2
+    end
+
+    two_events = [
+      "{\"event_id\":\"11112222333344445555666677778888\"}",
+      "{\"type\":\"event\"}",
+      "{\"event_id\":\"11112222333344445555666677778888\",\"message\":\"e1\"}",
+      "{\"type\":\"event\"}",
+      "{\"event_id\":\"22223333444455556666777788889999\",\"message\":\"e2\"}"
+    ].join("\n") + "\n"
+
+    post "/sentrace/api/#{project.id}/envelope",
+      params: two_events,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(413)
+
+    three_items = [
+      "{}",
+      "{\"type\":\"session\"}",
+      "{}",
+      "{\"type\":\"session\"}",
+      "{}",
+      "{\"type\":\"session\"}",
+      "{}"
+    ].join("\n") + "\n"
+
+    post "/sentrace/api/#{project.id}/envelope",
+      params: three_items,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(413)
+
+    # Deeply nested JSON (> 64 levels) returns 400 Bad Request
+    deep_json = ("{\"a\":" * 70) + "1" + ("}" * 70)
+    deep_envelope = "{}\n{\"type\":\"event\"}\n#{deep_json}\n"
+    post "/sentrace/api/#{project.id}/envelope",
+      params: deep_envelope,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(:bad_request)
+
+    # Breadcrumb timestamp & fingerprint bounds
+    Sentrace.reset_configuration!
+    raw_bounded = {
+      "event_id" => "aaaa2222bbbb3333cccc4444dddd5555",
+      "message" => "Bounds check",
+      "fingerprint" => Array.new(40) { |i| "fp-#{i}-#{"x" * 300}" },
+      "breadcrumbs" => [
+        { "category" => "ui", "message" => "long-ts", "timestamp" => "T" * 500 },
+        { "category" => "ui", "message" => "bad-ts", "timestamp" => { "nested" => 1 } }
+      ]
+    }
+    normalized_bounded = Sentrace::Ingestion::EventNormalizer.normalize(raw_bounded)
+    expect(normalized_bounded.fingerprint.length).to eq(32)
+    expect(normalized_bounded.fingerprint.first.bytesize).to be <= 256
+
+    post "/sentrace/api/#{project.id}/envelope",
+      params: "{}\n{\"type\":\"event\"}\n#{JSON.generate(raw_bounded)}\n",
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(:ok)
+    stored = project.events.find_by!(event_id: "aaaa2222bbbb3333cccc4444dddd5555")
+    expect(stored.event_data["breadcrumbs"][0]["timestamp"].length).to eq(64)
+    expect(stored.event_data["breadcrumbs"][1]).not_to have_key("timestamp")
   end
 end

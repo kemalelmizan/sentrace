@@ -1,4 +1,4 @@
-import { getGlobalObject, scrubUrl } from "./dsn.ts";
+import { getGlobalObject, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
 import { SENTRACE_INTERNAL_FETCH_FLAG } from "./transport.ts";
 import type { Breadcrumb, StackFrame } from "./types.ts";
 
@@ -29,10 +29,10 @@ function describeElement(target: unknown): string {
   const classPart =
     typeof el.className === "string" && el.className.trim()
       ? `.${el.className
-          .trim()
-          .split(/\s+/)
-          .slice(0, 3)
-          .join(".")}`
+        .trim()
+        .split(/\s+/)
+        .slice(0, 3)
+        .join(".")}`
       : "";
   const typeAttr = typeof el.getAttribute === "function" ? el.getAttribute("type") : null;
   const attrPart = typeAttr ? `[type="${typeAttr}"]` : "";
@@ -62,9 +62,9 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
   };
   const doc = g.document as
     | {
-        addEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
-        removeEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
-      }
+      addEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
+      removeEventListener?: (type: string, listener: (ev: unknown) => void, options?: boolean) => void;
+    }
     | undefined;
 
   if (win && typeof win.addEventListener === "function" && typeof win.removeEventListener === "function") {
@@ -74,12 +74,12 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       }
       const ev = rawEvent as
         | {
-            error?: unknown;
-            message?: string;
-            filename?: string;
-            lineno?: number;
-            colno?: number;
-          }
+          error?: unknown;
+          message?: string;
+          filename?: string;
+          lineno?: number;
+          colno?: number;
+        }
         | undefined;
       const err =
         ev && ev.error !== undefined && ev.error !== null
@@ -88,12 +88,12 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
       const fallbackFrame: StackFrame | undefined =
         ev && ev.filename
           ? {
-              filename: ev.filename,
-              function: "?",
-              lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
-              colno: typeof ev.colno === "number" ? ev.colno : undefined,
-              in_app: true
-            }
+            filename: ev.filename,
+            function: "?",
+            lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
+            colno: typeof ev.colno === "number" ? ev.colno : undefined,
+            in_app: true
+          }
           : undefined;
 
       hooks.onError(err, {
@@ -252,8 +252,7 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
           }
           let requestId: string | undefined;
           if (response && response.headers && typeof response.headers.get === "function") {
-            const rawHeader = response.headers.get("x-request-id");
-            requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+            requestId = normalizeSafeRequestId(response.headers.get("x-request-id"));
           }
           const status = response && typeof response.status === "number" ? response.status : undefined;
 
@@ -302,11 +301,11 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
 
   const XhrCtor = g.XMLHttpRequest as
     | {
-        prototype?: {
-          open?: (method: string, url: string | URL, ...rest: unknown[]) => unknown;
-          send?: (body?: unknown) => unknown;
-        };
-      }
+      prototype?: {
+        open?: (method: string, url: string | URL, ...rest: unknown[]) => unknown;
+        send?: (body?: unknown) => unknown;
+      };
+    }
     | undefined;
 
   if (
@@ -349,8 +348,7 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
           let requestId: string | undefined;
           if (typeof getHeader === "function") {
             try {
-              const rawHeader = getHeader.call(this, "x-request-id");
-              requestId = rawHeader !== null && rawHeader !== undefined ? rawHeader : undefined;
+              requestId = normalizeSafeRequestId(getHeader.call(this, "x-request-id"));
             } catch (_err) {
               requestId = undefined;
             }

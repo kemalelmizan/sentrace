@@ -7,32 +7,32 @@ module Sentrace
       end
 
       def show
-        project = Project.includes(:project_keys).find(params[:id])
+        project = Project.includes(:project_keys).find(scalar_param(:id))
         render json: { project: serialize_project(project) }
       end
 
       def create
-        slug = params[:slug].to_s.strip
+        slug = scalar_param(:slug).to_s.strip
         if slug.empty?
           return render json: { error: "slug is required" }, status: 422
         end
 
-        project, key = Project.provision!(slug: slug, name: params[:name])
+        project, key = Project.provision!(slug: slug, name: scalar_param(:name))
         render json: { project: serialize_project(project, key_override: key) }, status: :created
       end
 
       def update
-        project = Project.find(params[:id])
+        project = Project.find(scalar_param(:id))
         attrs = {}
-        attrs[:name] = params[:name] if params.key?(:name)
-        attrs[:slug] = params[:slug] if params.key?(:slug)
+        attrs[:name] = scalar_param(:name) if params.key?(:name)
+        attrs[:slug] = scalar_param(:slug) if params.key?(:slug)
         project.update!(attrs) if attrs.any?
 
         render json: { project: serialize_project(project) }
       end
 
       def destroy
-        project = Project.find(params[:id])
+        project = Project.find(scalar_param(:id))
         project.destroy!
         head :no_content
       end
@@ -41,7 +41,14 @@ module Sentrace
         def serialize_project(project, key_override: nil)
           active_key = key_override || project.active_key
           base_url = "#{request.base_url}#{Sentrace::Engine.routes.find_script_name({})}"
-          dsn = active_key ? Dsn.build(base_url: base_url, public_key: active_key.public_key, project_id: project.id).to_s : nil
+          dsn =
+            if active_key
+              begin
+                Dsn.build(base_url: base_url, public_key: active_key.public_key, project_id: project.id).to_s
+              rescue InvalidDsnError
+                nil
+              end
+            end
 
           {
             id: project.id,

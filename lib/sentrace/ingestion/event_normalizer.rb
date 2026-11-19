@@ -25,6 +25,8 @@ module Sentrace
       EVENT_ID_HEX = /\A[0-9a-f]{32}\z/
       SAFE_REQUEST_ID_REGEX = /\A[A-Za-z0-9._:-]{1,128}\z/
       ISSUE_MESSAGE_MAX_CHARS = 1024
+      MAX_FINGERPRINT_ITEMS = 32
+      MAX_FINGERPRINT_PART_BYTES = 256
 
       LEVEL_MAP = {
         "debug" => :debug,
@@ -232,7 +234,7 @@ module Sentrace
 
           items.select { |b| b.is_a?(Hash) }.last(@config.max_breadcrumbs).map do |crumb|
             entry = {
-              "timestamp" => crumb["timestamp"]&.to_s,
+              "timestamp" => normalize_breadcrumb_timestamp(crumb["timestamp"]),
               "type" => truncate_chars(crumb["type"], 64),
               "category" => truncate_chars(crumb["category"], 128),
               "level" => truncate_chars(crumb["level"], 32),
@@ -343,12 +345,23 @@ module Sentrace
           end
         end
 
+        def normalize_breadcrumb_timestamp(raw_timestamp)
+          case raw_timestamp
+          when Numeric
+            truncate_chars(raw_timestamp.to_s, 64)
+          when String
+            truncate_chars(raw_timestamp, 64)
+          end
+        end
+
         def extract_fingerprint(raw_fingerprint)
           return nil unless raw_fingerprint.is_a?(Array)
 
-          cleaned = raw_fingerprint.filter_map do |part|
-            str = part.to_s.strip
-            str unless str.empty?
+          cleaned = raw_fingerprint.first(MAX_FINGERPRINT_ITEMS).filter_map do |part|
+            next unless part.is_a?(String) || part.is_a?(Symbol) || part.is_a?(Numeric)
+
+            str = self.class.truncate_utf8_bytes(part.to_s.strip, MAX_FINGERPRINT_PART_BYTES)
+            str unless str.nil? || str.empty?
           end
 
           cleaned.empty? ? nil : cleaned

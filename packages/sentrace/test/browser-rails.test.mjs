@@ -575,3 +575,53 @@ test("Calling Sentrace.init() multiple times updates options, preserves globalSc
     Sentrace.resetClient();
   }
 });
+
+test("Scope rejects prototype-pollution keys and Rails/browser instrumentation rejects unsafe X-Request-Id values", async () => {
+  Sentrace.resetClient();
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const prevFetch = globalThis.fetch;
+
+  const { fakeWindow, fakeDocument } = createFakeBrowserEnv({
+    "sentrace-dsn": "https://pub_sec@shop.example.com/sentrace/5",
+    "sentrace-request-id": "bad request id with spaces\r\ninjected"
+  });
+  const mem = createMemoryTransport();
+
+  try {
+    globalThis.window = fakeWindow;
+    globalThis.document = fakeDocument;
+    globalThis.fetch = async () => ({
+      status: 500,
+      headers: {
+        get: (k) => (k.toLowerCase() === "x-request-id" ? "unsafe\nheader value!" : null)
+      }
+    });
+
+    Sentrace.init({ transport: mem.factory });
+    Sentrace.setTag("__proto__", "polluted");
+    Sentrace.setTag("constructor", "polluted");
+    Sentrace.setExtra("__proto__", { polluted: true });
+    Sentrace.setContext("__proto__", { polluted: true });
+    Sentrace.setContext("checkout", JSON.parse('{"__proto__":{"polluted":true},"step":"pay"}'));
+
+    await globalThis.fetch("https://shop.example.com/orders", { method: "POST" });
+    Sentrace.captureException(new Error("Security check"));
+
+    assert.equal(({}).polluted, undefined);
+    assert.equal(mem.envelopes.length, 1);
+    const ev = mem.envelopes[0].event;
+    assert.equal(ev.tags?.request_id, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(ev.tags ?? {}, "__proto__"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(ev.tags ?? {}, "constructor"), false);
+    assert.equal(ev.contexts.checkout.step, "pay");
+    assert.equal(ev.breadcrumbs.values[0].data.request_id, undefined);
+
+    await Sentrace.close();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    globalThis.fetch = prevFetch;
+    Sentrace.resetClient();
+  }
+});

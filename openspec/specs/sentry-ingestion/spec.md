@@ -37,14 +37,19 @@ The ingestion endpoint SHALL authenticate the project DSN public key (and secret
 - **THEN** the endpoint responds with HTTP `401` and creates zero issue or event records
 
 ### Requirement: Multi-item envelope parsing and non-error item discarding
-The envelope parser SHALL process multiple items in one envelope, persisting `event` error items while discarding `attachment`, `session`, `sessions`, `transaction`, `client_report`, `profile`, `replay_event`, `replay_recording`, and unknown item types without creating database rows, and returning HTTP `400` on malformed envelope framing or invalid JSON.
+The envelope parser SHALL process up to `max_envelope_items` (default `50`) and `max_events_per_envelope` (default `10`) per envelope, rejecting excess items or events with HTTP `413`, enforcing JSON `max_nesting: 64`, persisting `event` error items while discarding non-error telemetry items (`transaction`, `session`, `attachment`, `profile`, `replay_event`) with zero database rows, and returning HTTP `400` on malformed or deeply nested JSON.
 
 #### Scenario: Envelope containing error events and unsupported telemetry persists only error events
 - **WHEN** an authenticated envelope containing two `event` items, one `transaction` item, one `session` item, and one binary `attachment` item is posted
 - **THEN** exactly two `sentrace_events` rows are persisted and the unsupported items create zero database records
 
-#### Scenario: Malformed envelope JSON returns safe HTTP 400 error
-- **WHEN** an authenticated request sends truncated or invalid JSON in the envelope header or event item
+#### Scenario: Envelope exceeding max_events_per_envelope or max_envelope_items returns HTTP 413
+- **GIVEN** `max_events_per_envelope` configured to `3`
+- **WHEN** an authenticated client posts a single envelope containing `4` error events
+- **THEN** the endpoint responds with numeric HTTP `413` (`Cache-Control: no-store`) and avoids unbounded multi-item database amplification
+
+#### Scenario: Malformed or deeply nested envelope JSON returns safe HTTP 400 error
+- **WHEN** an authenticated request sends truncated, deeply nested (`> 64` levels), or invalid JSON in the envelope header or event item
 - **THEN** the endpoint responds with HTTP `400` without exposing internal Ruby stack traces
 
 ### Requirement: Event normalization and configurable field truncation
@@ -106,9 +111,9 @@ Sentrace SHALL ingest Sentry v7 envelopes sent by both the `sentrace` npm browse
 - **THEN** Sentrace persists the event with `platform == "javascript"`, integer `colno` on frames, sanitized `contexts["extra"]`, and `tags["request_id"]`
 
 ### Requirement: Non-cacheable ingestion HTTP responses across Rack 2.2 and 3.x
-Every response from `IngestionController` (`POST` and `OPTIONS /api/:project_id/envelope`, across `200`, `202`, `204`, `400`, `401`, `413`, and `500` statuses) SHALL include `Cache-Control: no-store` and SHALL use Rack `2.2`-compatible numeric status codes where Rack 3 renamed status symbols.
+Every response from `IngestionController` (`POST` and `OPTIONS /api/:project_id/envelope`, across `200`, `202`, `204`, `400`, `401`, `413`, and `500` statuses) SHALL include defensive HTTP security headers (`Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, and `Referrer-Policy: no-referrer`) and SHALL use Rack `2.2`-compatible numeric status codes where Rack 3 renamed status symbols.
 
-#### Scenario: Ingestion success, preflight, and error responses carry Cache-Control no-store
+#### Scenario: Ingestion success, preflight, and error responses carry defensive security headers
 - **GIVEN** an active project key and `cors_allowed_origins = ["https://spa.example.com"]`
 - **WHEN** clients send `OPTIONS /api/1/envelope`, a valid `POST /api/1/envelope`, an unauthorized `POST`, and an oversized `POST`
-- **THEN** every response includes `Cache-Control: no-store` and oversized payloads return numeric HTTP `413` on both Rack `2.2` and Rack `3.x`
+- **THEN** every response includes `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy`, and `Referrer-Policy`, and oversized payloads return numeric HTTP `413` on both Rack `2.2` and Rack `3.x`

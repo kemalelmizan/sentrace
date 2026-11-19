@@ -70,7 +70,7 @@ The MCP server SHALL expose `update_issue_status` as an explicit mutation tool a
 - **THEN** the persisted issue transitions to `resolved` and then `ignored` and returns the updated issue summary
 
 ### Requirement: Stable read-only MCP resources and structured investigation prompt
-The MCP server SHALL serve read-only JSON resources at `sentrace://environments`, `sentrace://projects`, `sentrace://projects/{project_id}/issues`, `sentrace://issues/{issue_id}`, and `sentrace://events/{event_id}`, plus an `investigate_issue` prompt that separates observed evidence from hypotheses.
+The MCP server SHALL serve read-only JSON resources at `sentrace://environments`, `sentrace://projects`, `sentrace://projects/{project_id}/issues`, `sentrace://issues/{issue_id}`, and `sentrace://events/{event_id}`, plus an `investigate_issue` prompt that separates observed evidence from hypotheses, marks telemetry payloads as untrusted data, and neutralizes embedded triple-backtick code fences against prompt injection breakouts.
 
 #### Scenario: Reading Sentrace resources and rendering the investigate_issue prompt
 - **GIVEN** an ingested issue and event in project `1`

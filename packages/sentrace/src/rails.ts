@@ -1,4 +1,4 @@
-import { getGlobalObject, scrubUrl } from "./dsn.ts";
+import { getGlobalObject, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
 import type {
   Breadcrumb,
   CaptureContext,
@@ -76,7 +76,7 @@ export function readRailsMeta(customDoc?: unknown): RailsMetaConfig {
     dsn: readMetaTagContent(doc, "sentrace-dsn"),
     environment: readMetaTagContent(doc, "sentrace-environment"),
     release: readMetaTagContent(doc, "sentrace-release"),
-    requestId: readMetaTagContent(doc, "sentrace-request-id")
+    requestId: normalizeSafeRequestId(readMetaTagContent(doc, "sentrace-request-id"))
   };
 }
 
@@ -100,7 +100,7 @@ export function installRailsTurboInstrumentation(
   const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
   const doc = rawDoc as MetaQueryDocument | undefined;
   if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
-    return () => {};
+    return () => { };
   }
 
   const onTurboVisit = (rawEvent: unknown): void => {
@@ -136,19 +136,21 @@ export function installRailsTurboInstrumentation(
     }
     const ev = rawEvent as
       | {
-          detail?: {
-            url?: string | URL;
-            error?: unknown;
-            request?: { url?: string };
-            response?: { statusCode?: number; responseHTML?: unknown; headers?: { get?: (k: string) => string | null } };
-          };
-        }
+        detail?: {
+          url?: string | URL;
+          error?: unknown;
+          request?: { url?: string };
+          response?: { statusCode?: number; responseHTML?: unknown; headers?: { get?: (k: string) => string | null } };
+        };
+      }
       | undefined;
     const detail = ev ? ev.detail : undefined;
     const rawUrl =
       detail && detail.url ? String(detail.url) : detail && detail.request ? detail.request.url : undefined;
     const safeUrl = scrubUrl(rawUrl, hooks.redactFields, hooks.allowFields);
-    const requestId = readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id");
+    const requestId = normalizeSafeRequestId(
+      readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id")
+    );
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }
@@ -182,22 +184,24 @@ export function installRailsTurboInstrumentation(
     }
     const ev = rawEvent as
       | {
-          target?: { id?: string };
-          detail?: {
-            response?: {
-              url?: string;
-              status?: number;
-              headers?: { get?: (k: string) => string | null };
-            };
+        target?: { id?: string };
+        detail?: {
+          response?: {
+            url?: string;
+            status?: number;
+            headers?: { get?: (k: string) => string | null };
           };
-        }
+        };
+      }
       | undefined;
 
     const frameId = (ev && ev.target && ev.target.id) || "unknown";
     const response = ev && ev.detail ? ev.detail.response : undefined;
     const status = response ? response.status : undefined;
     const safeUrl = scrubUrl(response ? response.url : undefined, hooks.redactFields, hooks.allowFields);
-    const requestId = readHeaderSafely(response ? response.headers : undefined, "x-request-id");
+    const requestId = normalizeSafeRequestId(
+      readHeaderSafely(response ? response.headers : undefined, "x-request-id")
+    );
     if (requestId) {
       hooks.onRequestIdChange(requestId);
     }
@@ -249,7 +253,7 @@ export function bindStimulusErrorHandler(
   captureFn: (error: unknown, context?: CaptureContext) => string
 ): () => void {
   if (!application || typeof application !== "object") {
-    return () => {};
+    return () => { };
   }
 
   let active = true;

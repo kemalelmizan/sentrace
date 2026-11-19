@@ -24,21 +24,36 @@ export function nullishCoalesce<T>(value: T | null | undefined, fallback: T): T 
 const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "password",
   "passwd",
+  "passcode",
   "secret",
+  "secret_key",
+  "secret-key",
+  "secretkey",
   "token",
   "access_token",
   "refresh_token",
   "id_token",
   "api_key",
+  "api-key",
   "apikey",
+  "private_key",
+  "private-key",
+  "privatekey",
+  "access_key",
+  "access-key",
+  "accesskey",
   "authorization",
   "cookie",
   "credit_card",
+  "credit-card",
   "card_number",
+  "card-number",
   "cvv",
   "cvc",
   "sentry_secret"
 ];
+
+const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/;
 
 const AUTH_SESSION_EXACT_KEYS = [
   "session",
@@ -51,6 +66,15 @@ const AUTH_SESSION_EXACT_KEYS = [
 ];
 
 const AUTH_SESSION_KEY_REGEX = /^_(?:[a-z0-9_]+_)?session$|(?:^|[_.-])session[_.-]?token$/;
+const SAFE_REQUEST_ID_REGEX = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export function normalizeSafeRequestId(rawValue: unknown): string | undefined {
+  if (typeof rawValue !== "string") {
+    return undefined;
+  }
+  const trimmed = rawValue.trim();
+  return SAFE_REQUEST_ID_REGEX.test(trimmed) ? trimmed : undefined;
+}
 
 export function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null {
   if (!rawDsn || typeof rawDsn !== "string") {
@@ -80,11 +104,25 @@ export function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null {
   }
 
   const projectId = segments.pop()!;
+  if (!/^[1-9]\d*$/.test(projectId)) {
+    return null;
+  }
+
+  let decodedPublicKey: string;
+  try {
+    decodedPublicKey = decodeURIComponent(uri.username);
+  } catch (_err) {
+    return null;
+  }
+  if (!decodedPublicKey || /[\s\x00-\x1f\x7f]/.test(decodedPublicKey)) {
+    return null;
+  }
+
   const pathPrefix = segments.length > 0 ? `/${segments.join("/")}` : "";
 
   return {
     protocol,
-    publicKey: decodeURIComponent(uri.username),
+    publicKey: decodedPublicKey,
     host: uri.hostname,
     port: uri.port || undefined,
     pathPrefix,
@@ -131,6 +169,9 @@ export function scrubUrl(
       return false;
     }
     if (AUTH_SESSION_EXACT_KEYS.indexOf(lower) !== -1 || AUTH_SESSION_KEY_REGEX.test(lower)) {
+      return true;
+    }
+    if (SENSITIVE_BOUNDED_QUERY_KEY_REGEX.test(lower)) {
       return true;
     }
     return redactPatterns.some((term) => lower.includes(term));

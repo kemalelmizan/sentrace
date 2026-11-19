@@ -1,11 +1,13 @@
 require "json"
 require "openssl"
+require "securerandom"
 require "uri"
 
 module Sentrace
   module Ingestion
     class Sanitizer
       REDACTED = "[REDACTED]"
+      FALLBACK_SECRET_MUTEX = Mutex.new
 
       FORBIDDEN_CONTEXT_KEYS = %w[
         env
@@ -20,21 +22,42 @@ module Sentrace
       ALWAYS_REDACT_PATTERNS = %w[
         password
         passwd
+        passcode
         secret
+        secret_key
+        secret-key
+        secretkey
         token
         authorization
         cookie
         credit_card
+        credit-card
         card_number
+        card-number
         cvv
         cvc
         api_key
+        api-key
         apikey
+        private_key
+        private-key
+        privatekey
+        access_key
+        access-key
+        accesskey
         ip_address
+        ip-address
         remote_addr
+        remote-addr
         remote_ip
+        remote-ip
         client_ip
+        client-ip
+        x_forwarded_for
+        x-forwarded-for
       ].freeze
+
+      SENSITIVE_BOUNDED_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/
 
       AUTH_SESSION_EXACT_KEYS = %w[
         session
@@ -48,29 +71,17 @@ module Sentrace
 
       AUTH_SESSION_KEY_REGEX = /\A_(?:[a-z0-9_]+_)?session\z|(?:^|[_.-])session[_.-]?token\z/
 
-      FORBIDDEN_USER_FIELD_PATTERNS = %w[
-        password
-        passwd
-        secret
-        token
-        authorization
-        cookie
-        credit_card
-        card_number
-        cvv
-        cvc
-        api_key
-        apikey
-        ip_address
-        remote_addr
-        remote_ip
-        client_ip
-      ].freeze
+      FORBIDDEN_USER_FIELD_PATTERNS = ALWAYS_REDACT_PATTERNS
 
       MAX_RETAINED_USER_FIELDS = 16
       MAX_USER_FIELD_BYTES = 256
 
+      PEM_PRIVATE_KEY_REGEX = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/
       BEARER_HEADER_REGEX = /\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i
+      BASIC_AUTH_HEADER_REGEX = /\bBasic\s+[A-Za-z0-9+\/]{8,}={0,2}/i
+      URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@]*:[^/\s@]*(@)}i
+      RAW_JWT_REGEX = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/
+      KNOWN_SECRET_TOKEN_REGEX = /\b(?:snt_mcp_[A-Za-z0-9_-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/
       PAN_CANDIDATE_REGEX = /\b(?:\d[ -]*?){13,19}\b/
 
       class << self
@@ -80,6 +91,12 @@ module Sentrace
 
         def sanitize_url(raw_url, raw_query_string = nil, config: Sentrace.configuration)
           new(config: config).sanitize_url(raw_url, raw_query_string)
+        end
+
+        def ephemeral_fallback_secret
+          FALLBACK_SECRET_MUTEX.synchronize do
+            @ephemeral_fallback_secret ||= SecureRandom.hex(32)
+          end
         end
       end
 
@@ -215,6 +232,7 @@ module Sentrace
           downcased = field_name.to_s.strip.downcase
           return true if downcased.empty? || downcased == "id_hash"
           return true if FORBIDDEN_CONTEXT_KEYS.include?(downcased) || auth_session_key?(downcased)
+          return true if SENSITIVE_BOUNDED_KEY_REGEX.match?(downcased)
 
           FORBIDDEN_USER_FIELD_PATTERNS.any? { |pat| downcased.include?(pat) }
         end
@@ -239,7 +257,7 @@ module Sentrace
           if defined?(Rails) && Rails.application && Rails.application.respond_to?(:secret_key_base) && Rails.application.secret_key_base.present?
             Rails.application.secret_key_base
           else
-            "sentrace-default-local-secret"
+            self.class.ephemeral_fallback_secret
           end
         end
 
@@ -303,6 +321,7 @@ module Sentrace
           downcased = key.to_s.strip.downcase
           return false if @allow_fields.key?(downcased)
           return true if auth_session_key?(downcased)
+          return true if SENSITIVE_BOUNDED_KEY_REGEX.match?(downcased)
 
           @redact_terms.any? { |term| downcased.include?(term) }
         end
@@ -314,7 +333,14 @@ module Sentrace
         def scrub_text(text)
           return text unless text.is_a?(String)
 
-          cleaned = text.gsub(BEARER_HEADER_REGEX, "Bearer #{REDACTED}")
+          cleaned = text
+            .gsub(PEM_PRIVATE_KEY_REGEX, REDACTED)
+            .gsub(BEARER_HEADER_REGEX, "Bearer #{REDACTED}")
+            .gsub(BASIC_AUTH_HEADER_REGEX, "Basic #{REDACTED}")
+            .gsub(URI_USERINFO_REGEX, "\\1#{REDACTED}\\2")
+            .gsub(RAW_JWT_REGEX, REDACTED)
+            .gsub(KNOWN_SECRET_TOKEN_REGEX, REDACTED)
+
           cleaned.gsub(PAN_CANDIDATE_REGEX) do |match|
             digits = match.gsub(/\D/, "")
             luhn_valid?(digits) ? REDACTED : match
@@ -374,23 +400,51 @@ module Sentrace
             bounded["user"] = bounded_user.empty? ? nil : bounded_user
           end
 
-          if bounded.dig("exception", "frames").is_a?(Array)
-            bounded["exception"] = bounded["exception"].merge(
-              "frames" => bounded.dig("exception", "frames").last(@config.max_stack_frames)
-            )
+          if bounded["exception"].is_a?(Hash)
+            exc = bounded["exception"].dup
+            if exc["value"].is_a?(String)
+              exc["value"] = EventNormalizer.truncate_utf8_bytes(exc["value"], @config.max_message_bytes)
+            end
+            if exc["frames"].is_a?(Array)
+              exc["frames"] = exc["frames"].last(@config.max_stack_frames)
+            end
+            bounded["exception"] = exc
           end
 
           if bounded["contexts"].is_a?(Hash)
             kept = {}
             bounded["contexts"].each do |k, v|
               break if kept.size >= @config.max_context_entries
-              candidate = kept.merge(k.to_s => v)
+
+              key_str = EventNormalizer.truncate_utf8_bytes(k.to_s, 64)
+              next if key_str.nil? || key_str.empty?
+              next if FORBIDDEN_CONTEXT_KEYS.include?(key_str.strip.downcase)
+              next unless v.is_a?(Hash)
+
+              candidate = kept.merge(key_str => bound_post_sanitizer_value(v, depth: 0))
               kept = candidate if JSON.generate(candidate).bytesize <= @config.max_context_bytes
             end
             bounded["contexts"] = kept
           end
 
           bounded
+        end
+
+        def bound_post_sanitizer_value(value, depth:)
+          return "[TRUNCATED]" if depth > 3
+
+          case value
+          when Hash
+            value.first(16).to_h do |k, v|
+              [ EventNormalizer.truncate_utf8_bytes(k.to_s, 64), bound_post_sanitizer_value(v, depth: depth + 1) ]
+            end
+          when Array
+            value.first(16).map { |v| bound_post_sanitizer_value(v, depth: depth + 1) }
+          when Numeric, TrueClass, FalseClass, NilClass
+            value
+          else
+            EventNormalizer.truncate_utf8_bytes(value.to_s, 512)
+          end
         end
 
         def deep_dup(obj)

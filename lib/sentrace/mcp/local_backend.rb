@@ -7,6 +7,7 @@ module Sentrace
     class LocalBackend
       DEFAULT_LIMIT = 25
       MAX_LIMIT = 100
+      MAX_CURSOR_BYTES = 512
       RECENT_EVENTS_PREVIEW_LIMIT = 5
 
       TREND_BUCKET_SQL = {
@@ -430,13 +431,18 @@ module Sentrace
         def decode_cursor(raw_cursor)
           return nil if raw_cursor.nil? || raw_cursor.to_s.strip.empty?
 
-          decoded = JSON.parse(Base64.urlsafe_decode64(raw_cursor.to_s.strip))
-          unless decoded.is_a?(Hash) && decoded["ts"].is_a?(String) && decoded["id"].is_a?(Integer)
+          stripped = raw_cursor.to_s.strip
+          if stripped.bytesize > MAX_CURSOR_BYTES
+            raise McpInvalidParamsError, "Malformed pagination cursor"
+          end
+
+          decoded = JSON.parse(Base64.urlsafe_decode64(stripped), max_nesting: 8)
+          unless decoded.is_a?(Hash) && decoded["ts"].is_a?(String) && decoded["id"].is_a?(Integer) && decoded["id"].positive?
             raise McpInvalidParamsError, "Invalid pagination cursor"
           end
 
           { ts: Time.iso8601(decoded["ts"]).utc, id: decoded["id"] }
-        rescue ArgumentError, JSON::ParserError
+        rescue ArgumentError, JSON::ParserError, JSON::NestingError
           raise McpInvalidParamsError, "Malformed pagination cursor"
         end
     end

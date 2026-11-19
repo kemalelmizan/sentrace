@@ -5,13 +5,15 @@ module Sentrace
   module Issues
     class Fingerprint
       DEFAULT_PLACEHOLDER = "{{ default }}"
+      MAX_FILENAME_INPUT_BYTES = 2048
+      MAX_MESSAGE_INPUT_BYTES = 8192
 
       GEM_PATH_REGEX = %r{(?:\A|/)gems/([^/]+?)(?:-\d[\w.-]*)?/(.+)\z}
       RELEASE_PATH_REGEX = %r{(?:\A|/)(?:releases/[^/]+|current)/(.+)\z}
       APP_ROOT_SUBDIR_REGEX = %r{(?:\A|/)((?:app|config|db|lib)/.+)\z}
       HTTP_ORIGIN_REGEX = %r{\A(?:https?|file)://[^/]+}i
       BUNDLER_SCHEME_REGEX = %r{\A(?:webpack(?:-internal)?|vite|turbopack):///*}i
-      JS_ASSET_DIGEST_REGEX = /[-.](?:[0-9a-f]{8,64}|(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{8,32})(?:\.digested)?(?=\.(?:m?js|cjs|jsx|tsx?|map)\z)/i
+      JS_ASSET_DIGEST_REGEX = /[-.](?:[0-9a-f]{8,64}|(?=[A-Za-z0-9]{0,31}\d)(?=[A-Za-z0-9]{0,31}[A-Za-z])[A-Za-z0-9]{8,32})(?:\.digested)?(?=\.(?:m?js|cjs|jsx|tsx?|map)\z)/i
       ANONYMOUS_FUNCTION_NAMES = [ "?", "<anonymous>" ].freeze
 
       OBJECT_ADDRESS_REGEX = /0x[0-9a-f]{6,}/i
@@ -30,7 +32,7 @@ module Sentrace
         def normalize_filename(raw_filename)
           return "" if raw_filename.nil?
 
-          cleaned = raw_filename.to_s.strip
+          cleaned = Ingestion::EventNormalizer.truncate_utf8_bytes(raw_filename, MAX_FILENAME_INPUT_BYTES).to_s.strip
           return "" if cleaned.empty?
 
           cleaned = cleaned
@@ -57,7 +59,7 @@ module Sentrace
         def normalize_message(raw_message)
           return "" if raw_message.nil?
 
-          raw_message.to_s
+          Ingestion::EventNormalizer.truncate_utf8_bytes(raw_message, MAX_MESSAGE_INPUT_BYTES).to_s
             .gsub(ISO_TIMESTAMP_REGEX, "<timestamp>")
             .gsub(UUID_REGEX, "<uuid>")
             .gsub(OBJECT_ADDRESS_REGEX, "<hex>")
@@ -96,9 +98,14 @@ module Sentrace
 
           return nil unless fp.is_a?(Array)
 
-          cleaned = fp.filter_map do |item|
-            str = item.to_s.strip
-            str unless str.empty?
+          cleaned = fp.first(Ingestion::EventNormalizer::MAX_FINGERPRINT_ITEMS).filter_map do |item|
+            next unless item.is_a?(String) || item.is_a?(Symbol) || item.is_a?(Numeric)
+
+            str = Ingestion::EventNormalizer.truncate_utf8_bytes(
+              item.to_s.strip,
+              Ingestion::EventNormalizer::MAX_FINGERPRINT_PART_BYTES
+            )
+            str unless str.nil? || str.empty?
           end
           cleaned.empty? ? nil : cleaned
         end

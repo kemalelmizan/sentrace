@@ -3,6 +3,10 @@ require "securerandom"
 
 module Sentrace
   class ProjectKey < ApplicationRecord
+    MAX_PUBLIC_KEY_INPUT_BYTES = 128
+    MAX_SECRET_INPUT_BYTES = 512
+    DUMMY_DIGEST = ("0" * 64).freeze
+
     belongs_to :project
 
     scope :active, -> { where(active: true, revoked_at: nil) }
@@ -21,13 +25,28 @@ module Sentrace
 
       def authenticate_public_key(project_id:, public_key:, secret: nil)
         return nil if project_id.blank? || public_key.blank?
+        return nil unless public_key.is_a?(String) || public_key.is_a?(Symbol)
+        return nil if !secret.nil? && !secret.is_a?(String) && !secret.is_a?(Symbol)
 
         provided_pub = public_key.to_s
-        candidates = active.where(project_id: project_id).to_a
+        return nil if provided_pub.bytesize > MAX_PUBLIC_KEY_INPUT_BYTES
+        return nil if !secret.nil? && secret.to_s.bytesize > MAX_SECRET_INPUT_BYTES
 
-        matched = candidates.find do |key|
-          key.public_key.bytesize == provided_pub.bytesize &&
-            ActiveSupport::SecurityUtils.secure_compare(key.public_key, provided_pub)
+        provided_pub_digest = digest_secret(provided_pub)
+        candidates = active.where(project_id: project_id).to_a
+        if candidates.empty?
+          ActiveSupport::SecurityUtils.secure_compare(provided_pub_digest, DUMMY_DIGEST)
+          return nil
+        end
+
+        matched = nil
+        candidates.each do |key|
+          candidate_pub_digest = digest_secret(key.public_key)
+          if ActiveSupport::SecurityUtils.secure_compare(candidate_pub_digest, provided_pub_digest) &&
+             key.public_key.bytesize == provided_pub.bytesize &&
+             ActiveSupport::SecurityUtils.secure_compare(key.public_key, provided_pub)
+            matched = key
+          end
         end
 
         return nil unless matched
@@ -44,6 +63,8 @@ module Sentrace
 
     def verify_secret(candidate)
       return false if secret_digest.blank? || candidate.blank?
+      return false unless candidate.is_a?(String) || candidate.is_a?(Symbol)
+      return false if candidate.to_s.bytesize > MAX_SECRET_INPUT_BYTES
 
       candidate_digest = self.class.digest_secret(candidate)
       secret_digest.bytesize == candidate_digest.bytesize &&

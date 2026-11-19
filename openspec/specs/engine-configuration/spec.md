@@ -14,7 +14,7 @@ The engine SHALL operate in an isolated namespace with the `sentrace_` database 
 - **THEN** the engine initializes cleanly and scopes all engine-owned table names under the `sentrace_` prefix
 
 ### Requirement: Runtime configuration defaults and overrides
-The system SHALL expose a block-based configuration interface with safe defaults for enablement (`true`), event retention (`30 days`), orphan issue retention, envelope size (`1 MB`), message size (`4 KB`), stack frames (`50`), breadcrumbs (`20`), tags (`32`, keys `64 B`, values `256 B`), and context entries (`16`, serialized `8 KB`), and MUST allow host applications to override each value.
+The system SHALL expose a block-based configuration interface with safe defaults for enablement (`true`), event retention (`30 days`), orphan issue retention, envelope size (`1 MB`), events per envelope (`10`), items per envelope (`50`), message size (`4 KB`), stack frames (`50`), breadcrumbs (`20`), tags (`32`, keys `64 B`, values `256 B`), and context entries (`16`, serialized `8 KB`), and MUST allow host applications to override each value.
 
 #### Scenario: Default configuration values are applied when unconfigured
 - **WHEN** Sentrace boots without custom overrides

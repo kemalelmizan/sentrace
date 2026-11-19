@@ -145,6 +145,8 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `orphan_issue_retention_period` | `7.days` | Grace period before deleting `sentrace_issues` with zero remaining events. |
 | `retention_batch_size` | `1000` | Maximum rows deleted per SQL statement during retention cleanup. |
 | `max_envelope_size` | `1.megabyte` | Pre-parse compressed and decompressed envelope byte ceiling (`413` if exceeded). |
+| `max_events_per_envelope` | `10` | Maximum error event items processed per HTTP envelope (`413` if exceeded). |
+| `max_envelope_items` | `50` | Maximum total items (events + discarded telemetry) scanned per envelope (`413` if exceeded). |
 | `max_message_bytes` | `4.kilobytes` | Maximum UTF-8 byte size for normalized exception/event messages. |
 | `max_stack_frames` | `50` | Maximum stack frames retained per event (preserving innermost frames). |
 | `max_breadcrumbs` | `20` | Maximum trailing breadcrumbs retained per event. |
@@ -352,6 +354,14 @@ Reference benchmark on PostgreSQL 18 / Ruby 3.3.13 (`EVENTS=500`, 8 stack frames
 ## Internal Administrative JSON API
 
 `Sentrace::Engine` also mounts `/internal/projects`, `/internal/issues`, `/internal/events`, and `/internal/stats` for administration and integration testing, protected by default with MCP bearer tokens or a host-provided `config.internal_authenticator` policy.
+
+### Built-in `/sentrace` Security Protections
+
+- **Defensive response headers on all `/sentrace/*` routes**: `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, and `Referrer-Policy: no-referrer`.
+- **HTTPS + loopback peer verification on `/sentrace/mcp`**: Plain HTTP is permitted only when both `Host` and the peer IP (`remote_ip` / `REMOTE_ADDR`) are loopback (`127.0.0.0/8` / `::1`), blocking cleartext `Host: localhost` spoofing.
+- **Cross-origin / DNS-rebinding & cookie-CSRF defense**: `/sentrace/mcp` and `/sentrace/internal/*` reject cross-origin `Origin`, `Origin: null`, and `Sec-Fetch-Site: cross-site` requests with `403 Forbidden`; state-changing cookie-authenticated requests on `/sentrace/internal/*` additionally require a verified same-origin `Origin`, `Content-Type: application/json`, or `X-CSRF-Token` / `X-Requested-With`.
+- **Pre-body authentication & multi-item amplification caps**: `/sentrace/api/:project_id/envelope` validates `project_id` and header/query DSN credentials before reading `request.body`, enforces `max_envelope_size`, `max_events_per_envelope` (`10`), `max_envelope_items` (`50`), and JSON `max_nesting: 64`, and bounds breadcrumb timestamps and explicit fingerprints.
+- **Recursive secret scrubbing & prompt-injection containment**: Redacts underscore and hyphenated credential keys (`api_key`, `api-key`, `private-key`, `secret-key`, bounded `ssn`/`otp`/`totp`), masks Bearer/Basic headers, URI passwords, JWTs, cloud/API tokens (`snt_mcp_`, `AKIA`, `ghp_`, `sk_live_`, `xoxb-`), PEM private keys, PostgreSQL dollar-quoted SQL literals, and Luhn PANs, and neutralizes embedded code fences inside MCP `investigate_issue` telemetry snapshots.
 
 ## Development Workflow (OpenSpec)
 

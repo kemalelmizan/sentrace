@@ -2,6 +2,8 @@ module Sentrace
   module Breadcrumbs
     module ActiveSupportLogger
       IGNORED_SQL_NAMES = %w[SCHEMA TRANSACTION EXPLAIN].freeze
+      MAX_RAW_SQL_BYTES = 8192
+      SQL_DOLLAR_QUOTED_LITERAL = /\$((?:[A-Za-z_][A-Za-z0-9_]*)?)\$[\s\S]*?\$\1\$/
       SQL_SINGLE_QUOTED_LITERAL = /'(?:''|\\'|[^'])*'/
       SQL_OPERATION_REGEX = /\A\s*([A-Za-z]+)/
 
@@ -111,7 +113,10 @@ module Sentrace
           end
 
           def sanitize_sql_statement(sql)
-            masked = sql.dup.force_encoding(Encoding::UTF_8).scrub.gsub(SQL_SINGLE_QUOTED_LITERAL, "'?'")
+            bounded_sql = Ingestion::EventNormalizer.truncate_utf8_bytes(sql, MAX_RAW_SQL_BYTES).to_s
+            masked = bounded_sql
+              .gsub(SQL_DOLLAR_QUOTED_LITERAL, "'?'")
+              .gsub(SQL_SINGLE_QUOTED_LITERAL, "'?'")
             collapsed = masked.gsub(/\s+/, " ").strip
             Ingestion::EventNormalizer.truncate_utf8_bytes(collapsed, 256)
           end

@@ -10,6 +10,10 @@ module Sentrace
         return render json: { error: "HTTPS is required for non-local MCP endpoints" }, status: :forbidden
       end
 
+      if RequestSecurity.forbidden_cross_origin?(request)
+        return render json: { error: "Cross-origin MCP requests are forbidden" }, status: :forbidden
+      end
+
       token_record = authenticate_bearer_token
       unless token_record
         response.set_header("WWW-Authenticate", 'Bearer realm="sentrace-mcp"')
@@ -32,13 +36,13 @@ module Sentrace
 
     private
       def https_or_loopback?
-        return true if request.ssl?
-
-        Configuration::LOOPBACK_HOSTS.include?(request.host.to_s.downcase)
+        RequestSecurity.https_or_loopback?(request)
       end
 
       def authenticate_bearer_token
         auth_header = request.headers["Authorization"].to_s
+        return nil if auth_header.bytesize > 1024
+
         match = auth_header.match(/\ABearer\s+(\S+)\z/i)
         return nil unless match
 
@@ -57,11 +61,11 @@ module Sentrace
       def write_rack_response(rack_status, rack_headers, rack_body)
         rack_headers.each do |key, value|
           next if key.to_s.casecmp("content-length").zero?
-          next if key.to_s.casecmp("cache-control").zero?
+          next if RequestSecurity.security_header_key?(key)
 
           response.set_header(key, value)
         end
-        response.set_header("Cache-Control", "no-store")
+        RequestSecurity.apply_security_headers!(response)
 
         chunks = []
         rack_body.each { |chunk| chunks << chunk.to_s }

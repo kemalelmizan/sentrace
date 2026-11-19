@@ -5,6 +5,8 @@ module Sentrace
   class McpToken < ApplicationRecord
     TOKEN_PREFIX_HEADER = "snt_mcp_".freeze
     PREFIX_LENGTH = 12
+    MAX_RAW_TOKEN_BYTES = 512
+    DUMMY_DIGEST = ("0" * 64).freeze
     ENSURED_TOKEN_FORMAT = /\Asnt_mcp_[A-Za-z0-9_-]{24,256}\z/
 
     scope :active, -> { where(active: true, revoked_at: nil) }
@@ -35,14 +37,25 @@ module Sentrace
 
       def authenticate(raw_token)
         return nil if raw_token.blank?
+        return nil unless raw_token.is_a?(String) || raw_token.is_a?(Symbol)
 
         provided = raw_token.to_s
-        return nil unless provided.start_with?(TOKEN_PREFIX_HEADER)
+        return nil if provided.bytesize > MAX_RAW_TOKEN_BYTES
 
         candidate_digest = digest_token(provided)
-        matched = nil
+        unless provided.start_with?(TOKEN_PREFIX_HEADER)
+          ActiveSupport::SecurityUtils.secure_compare(candidate_digest, DUMMY_DIGEST)
+          return nil
+        end
 
-        active.to_a.each do |record|
+        records = active.to_a
+        if records.empty?
+          ActiveSupport::SecurityUtils.secure_compare(candidate_digest, DUMMY_DIGEST)
+          return nil
+        end
+
+        matched = nil
+        records.each do |record|
           if record.token_digest.bytesize == candidate_digest.bytesize &&
              ActiveSupport::SecurityUtils.secure_compare(record.token_digest, candidate_digest)
             matched = record

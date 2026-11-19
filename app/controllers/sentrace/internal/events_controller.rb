@@ -3,20 +3,20 @@ module Sentrace
     class EventsController < BaseController
       def index
         payload = local_backend.list_events(
-          project_id: params[:project_id],
-          issue_id: params[:issue_id],
-          since: params[:since],
-          until: params[:until],
-          limit: params[:limit],
-          cursor: params[:cursor]
+          project_id: scalar_param(:project_id),
+          issue_id: scalar_param(:issue_id),
+          since: scalar_param(:since),
+          until: scalar_param(:until),
+          limit: scalar_param(:limit),
+          cursor: scalar_param(:cursor)
         )
         render json: payload
       end
 
       def show
         payload = local_backend.get_event(
-          event_id: params[:id],
-          project_id: params[:project_id]
+          event_id: scalar_param(:id),
+          project_id: scalar_param(:project_id)
         )
         render json: payload
       end

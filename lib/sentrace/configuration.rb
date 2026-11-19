@@ -36,6 +36,8 @@ module Sentrace
     SUPPORTED_CAPTURE_DISPATCH_MODES = %i[async inline].freeze
 
     LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1 [::1]].freeze
+    DEFAULT_MAX_EVENTS_PER_ENVELOPE = 10
+    DEFAULT_MAX_ENVELOPE_ITEMS = 50
 
     POSITIVE_NUMERIC_ATTRIBUTES = %i[
       retention_period
@@ -51,6 +53,12 @@ module Sentrace
       max_context_bytes
       remote_timeout
       remote_ping_timeout
+    ].freeze
+
+    POSITIVE_INTEGER_ATTRIBUTES = %i[
+      retention_batch_size
+      max_events_per_envelope
+      max_envelope_items
     ].freeze
 
     EnvironmentDefinition = Data.define(:name, :transport, :url, :token, :timeout) do
@@ -78,6 +86,8 @@ module Sentrace
       :orphan_issue_retention_period,
       :retention_batch_size,
       :max_envelope_size,
+      :max_events_per_envelope,
+      :max_envelope_items,
       :max_message_bytes,
       :max_stack_frames,
       :max_breadcrumbs,
@@ -117,6 +127,8 @@ module Sentrace
       @orphan_issue_retention_period = 7.days
       @retention_batch_size = 1_000
       @max_envelope_size = 1.megabyte
+      @max_events_per_envelope = DEFAULT_MAX_EVENTS_PER_ENVELOPE
+      @max_envelope_items = DEFAULT_MAX_ENVELOPE_ITEMS
       @max_message_bytes = 4.kilobytes
       @max_stack_frames = 50
       @max_breadcrumbs = 20
@@ -191,8 +203,11 @@ module Sentrace
         raise ConfigurationError, "retain_user_fields must be an Array of field names"
       end
 
-      unless retention_batch_size.is_a?(Integer) && retention_batch_size.positive?
-        raise ConfigurationError, "retention_batch_size must be a positive Integer (got #{retention_batch_size.inspect})"
+      POSITIVE_INTEGER_ATTRIBUTES.each do |attr|
+        val = public_send(attr)
+        unless val.is_a?(Integer) && val.positive?
+          raise ConfigurationError, "#{attr} must be a positive Integer (got #{val.inspect})"
+        end
       end
 
       if !sanitizer.nil? && !sanitizer.respond_to?(:call)
@@ -383,6 +398,16 @@ module Sentrace
           raise ConfigurationError, "environment #{env_def.name.inspect} timeout must be a positive number"
         end
 
+        if !env_def.token.nil? && !env_def.token.is_a?(String)
+          raise ConfigurationError, "environment #{env_def.name.inspect} token must be a String or nil"
+        end
+
+        raw_token = env_def.token.to_s.strip
+        if !raw_token.empty? && raw_token.match?(/[\s\x00-\x1F\x7F]/)
+          raise ConfigurationError,
+            "environment #{env_def.name.inspect} token must not contain whitespace or control characters"
+        end
+
         raw_url = env_def.url.to_s.strip
         return if raw_url.empty?
 
@@ -391,7 +416,12 @@ module Sentrace
           raise ConfigurationError, "environment #{env_def.name.inspect} url #{env_def.url.inspect} is invalid"
         end
 
-        if uri.scheme != "https" && !LOOPBACK_HOSTS.include?(uri.host.downcase)
+        if uri.userinfo || uri.fragment
+          raise ConfigurationError,
+            "environment #{env_def.name.inspect} url must not contain embedded credentials or fragments"
+        end
+
+        if uri.scheme != "https" && !RequestSecurity.loopback_host?(uri.host)
           raise ConfigurationError,
             "environment #{env_def.name.inspect} requires HTTPS for non-local host #{uri.host.inspect}"
         end

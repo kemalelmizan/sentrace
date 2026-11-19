@@ -100,7 +100,7 @@ module Sentrace
       end
 
       def fetch_events_per_day(conn, days:, now:)
-        window_days = [ days.to_i, 1 ].max
+        window_days = days.to_i.clamp(1, 3650)
         cutoff = now.utc - window_days.days
         sql = Event.sanitize_sql_array([
           <<~SQL.squish,

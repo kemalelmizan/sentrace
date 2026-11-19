@@ -188,4 +188,42 @@ RSpec.describe Sentrace::Mcp::RemoteHttpClient do
       accept_thread.join(0.2)
     end
   end
+
+  it "rejects embedded URL userinfo, control-character tokens, and oversized or deeply nested remote JSON responses" do
+    no_io_client = described_class.new(http_requester: ->(**_args) { raise "must not call network" })
+
+    userinfo_env = build_env(url: "https://admin:secret@staging.example.com/sentrace/mcp")
+    expect {
+      no_io_client.call_environment(userinfo_env, :list_projects)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("invalid_endpoint") }
+
+    crlf_tok_env = build_env(token: "snt_mcp_bad\r\nHeader: injected")
+    expect {
+      no_io_client.call_environment(crlf_tok_env, :list_projects)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("invalid_endpoint") }
+
+    env = build_env
+    oversized_client = described_class.new(
+      http_requester: ->(**_args) {
+        Sentrace::Mcp::RemoteHttpClient::HttpResponse.new(
+          status: 200,
+          headers: {},
+          body: "x" * (described_class::MAX_REMOTE_RESPONSE_BYTES + 10)
+        )
+      }
+    )
+    expect {
+      oversized_client.call_environment(env, :list_projects)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("protocol_error") }
+
+    deep_json = ("{\"a\":" * 70) + "1" + ("}" * 70)
+    deep_client = described_class.new(
+      http_requester: ->(**_args) {
+        Sentrace::Mcp::RemoteHttpClient::HttpResponse.new(status: 200, headers: {}, body: deep_json)
+      }
+    )
+    expect {
+      deep_client.call_environment(env, :list_projects)
+    }.to raise_error(Sentrace::McpRemoteError) { |e| expect(e.category).to eq("protocol_error") }
+  end
 end

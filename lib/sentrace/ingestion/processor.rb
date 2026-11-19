@@ -23,7 +23,11 @@ module Sentrace
       end
 
       def process_raw_envelope(raw_body, project:, received_at: Time.current)
-        parsed = EnvelopeParser.parse(raw_body)
+        parsed = EnvelopeParser.parse(
+          raw_body,
+          max_items: @config.max_envelope_items,
+          max_events: @config.max_events_per_envelope
+        )
         accepted_ids = []
         duplicate_ids = []
 

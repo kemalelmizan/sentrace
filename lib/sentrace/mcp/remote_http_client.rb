@@ -21,6 +21,8 @@ module Sentrace
 
       REQUEST_CONTENT_TYPE = "application/json".freeze
       REQUEST_ACCEPT = "application/json, text/event-stream".freeze
+      MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024
+      MAX_JSON_NESTING = 64
 
       def initialize(http_requester: nil)
         @http_requester = http_requester || method(:perform_net_http_post)
@@ -60,7 +62,10 @@ module Sentrace
 
         case response.status
         when 200..299
-          parsed = JSON.parse(response.body.to_s)
+          raw_body = response.body.to_s
+          return "protocol_error" if raw_body.bytesize > MAX_REMOTE_RESPONSE_BYTES
+
+          parsed = JSON.parse(raw_body, max_nesting: MAX_JSON_NESTING)
           parsed.is_a?(Hash) && parsed.key?("result") ? "connected" : "protocol_error"
         when 401, 403
           "authentication_failed"
@@ -69,7 +74,7 @@ module Sentrace
         end
       rescue McpRemoteError => e
         e.category
-      rescue JSON::ParserError
+      rescue JSON::ParserError, JSON::NestingError
         "protocol_error"
       end
 
@@ -120,7 +125,8 @@ module Sentrace
 
         def validate_endpoint!(env_def)
           raw_url = env_def.url.to_s.strip
-          if raw_url.empty? || env_def.token.to_s.strip.empty?
+          raw_token = env_def.token.to_s.strip
+          if raw_url.empty? || raw_token.empty?
             raise McpRemoteError.new(
               "Remote MCP URL or bearer token is not configured for environment #{env_def.name}",
               environment: env_def.name,
@@ -128,8 +134,16 @@ module Sentrace
             )
           end
 
+          if raw_token.match?(/[\s\x00-\x1F\x7F]/)
+            raise McpRemoteError.new(
+              "Invalid MCP bearer token format for environment #{env_def.name}",
+              environment: env_def.name,
+              category: "invalid_endpoint"
+            )
+          end
+
           uri = URI.parse(raw_url)
-          unless uri.is_a?(URI::HTTP) && uri.host && !uri.host.empty?
+          unless uri.is_a?(URI::HTTP) && uri.host && !uri.host.empty? && uri.userinfo.nil? && uri.fragment.nil?
             raise McpRemoteError.new(
               "Invalid MCP endpoint URL for environment #{env_def.name}",
               environment: env_def.name,
@@ -137,7 +151,7 @@ module Sentrace
             )
           end
 
-          if uri.scheme != "https" && !Configuration::LOOPBACK_HOSTS.include?(uri.host.downcase)
+          if uri.scheme != "https" && !RequestSecurity.loopback_host?(uri.host)
             raise McpRemoteError.new(
               "HTTPS is required for remote environment #{env_def.name}",
               environment: env_def.name,
@@ -159,7 +173,7 @@ module Sentrace
             "Content-Type" => REQUEST_CONTENT_TYPE,
             "Accept" => REQUEST_ACCEPT
           }
-          token = env_def.token.to_s
+          token = env_def.token.to_s.strip
           headers["Authorization"] = "Bearer #{token}" unless token.empty?
           headers
         end
@@ -198,7 +212,15 @@ module Sentrace
         end
 
         def parse_json_rpc_result!(env_def, raw_body)
-          parsed = JSON.parse(raw_body)
+          if raw_body.bytesize > MAX_REMOTE_RESPONSE_BYTES
+            raise McpRemoteError.new(
+              "Response from environment #{env_def.name} exceeded #{MAX_REMOTE_RESPONSE_BYTES} bytes",
+              environment: env_def.name,
+              category: "protocol_error"
+            )
+          end
+
+          parsed = JSON.parse(raw_body, max_nesting: MAX_JSON_NESTING)
           unless parsed.is_a?(Hash)
             raise McpRemoteError.new(
               "Malformed JSON-RPC envelope from environment #{env_def.name}",
@@ -240,7 +262,7 @@ module Sentrace
           end
 
           normalize_environment_attribution(structured, env_def.name.to_s)
-        rescue JSON::ParserError
+        rescue JSON::ParserError, JSON::NestingError
           raise McpRemoteError.new(
             "Invalid JSON response from environment #{env_def.name}",
             environment: env_def.name,
@@ -272,9 +294,10 @@ module Sentrace
 
           first_text = content_list.find { |item| item.is_a?(Hash) && item["type"] == "text" && item["text"].is_a?(String) }
           return nil unless first_text
+          return nil if first_text["text"].bytesize > MAX_REMOTE_RESPONSE_BYTES
 
-          JSON.parse(first_text["text"])
-        rescue JSON::ParserError
+          JSON.parse(first_text["text"], max_nesting: MAX_JSON_NESTING)
+        rescue JSON::ParserError, JSON::NestingError
           nil
         end
 
@@ -311,8 +334,13 @@ module Sentrace
 
         def perform_net_http_post(uri:, headers:, body:, timeout:)
           require "net/http"
-          http = Net::HTTP.new(uri.host, uri.port)
+          target_host = uri.respond_to?(:hostname) && uri.hostname ? uri.hostname : uri.host
+          http = Net::HTTP.new(target_host, uri.port)
           http.use_ssl = (uri.scheme == "https")
+          if http.use_ssl?
+            http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+            http.min_version = OpenSSL::SSL::TLS1_2_VERSION if http.respond_to?(:min_version=)
+          end
           http.open_timeout = timeout
           http.read_timeout = timeout
           http.write_timeout = timeout if http.respond_to?(:write_timeout=)
@@ -322,12 +350,34 @@ module Sentrace
           request = Net::HTTP::Post.new(uri.request_uri, headers)
           request.body = body
 
-          response = http.start { |conn| conn.request(request) }
+          status_code = nil
+          response_headers = nil
+          body_buffer = "".b
+
+          http.start do |conn|
+            conn.request(request) do |response|
+              status_code = response.code.to_i
+              response_headers = response.each_header.to_h
+              response.read_body do |chunk|
+                body_buffer << chunk.b
+                if body_buffer.bytesize > MAX_REMOTE_RESPONSE_BYTES
+                  raise McpRemoteError.new(
+                    "Remote MCP response exceeded #{MAX_REMOTE_RESPONSE_BYTES} bytes",
+                    environment: target_host,
+                    category: "protocol_error"
+                  )
+                end
+              end
+            end
+          end
+
           HttpResponse.new(
-            status: response.code.to_i,
-            headers: response.each_header.to_h,
-            body: response.body.to_s
+            status: status_code,
+            headers: response_headers || {},
+            body: body_buffer.force_encoding(Encoding::UTF_8)
           )
+        rescue McpRemoteError => e
+          raise e
         end
     end
   end

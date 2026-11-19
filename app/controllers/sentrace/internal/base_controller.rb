@@ -1,6 +1,7 @@
 module Sentrace
   module Internal
     class BaseController < ApplicationController
+      before_action :verify_request_origin_and_csrf!
       before_action :authenticate_internal_request!
 
       rescue_from ActiveRecord::RecordNotFound do |err|
@@ -20,6 +21,12 @@ module Sentrace
       end
 
       private
+        def verify_request_origin_and_csrf!
+          if RequestSecurity.forbidden_cross_origin?(request) || RequestSecurity.forbidden_cookie_csrf?(request)
+            render json: { error: "Forbidden" }, status: :forbidden
+          end
+        end
+
         def authenticate_internal_request!
           custom_auth = Sentrace.configuration.internal_authenticator
           if custom_auth
@@ -30,11 +37,15 @@ module Sentrace
           end
 
           auth_header = request.headers["Authorization"].to_s
-          bearer = auth_header[/\ABearer\s+(\S+)\z/i, 1]
+          bearer = auth_header.bytesize <= 1024 ? auth_header[/\ABearer\s+(\S+)\z/i, 1] : nil
           return if McpToken.authenticate(bearer)
 
           response.set_header("WWW-Authenticate", 'Bearer realm="sentrace-internal"')
           render json: { error: "Unauthorized" }, status: :unauthorized
+        end
+
+        def scalar_param(key)
+          RequestSecurity.scalar_param(params, key)
         end
 
         def local_backend
