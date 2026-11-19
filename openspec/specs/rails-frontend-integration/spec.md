@@ -49,11 +49,11 @@ The browser SDK SHALL extract `X-Request-Id` response headers from `fetch` and `
 - **THEN** both the backend Ruby event and the frontend JavaScript event carry `tags["request_id"] == "req-corr-42"` in Sentrace
 
 ### Requirement: Engine-bundled JavaScript assets for offline Rails asset delivery
-The `sentrace` gem SHALL ship synced ES2019-compatible ESM (`app/assets/javascripts/sentrace.js`) and browser global (`app/assets/javascripts/sentrace.browser.js`) bundles (`0.1.2`) inside the engine containing zero ES2020+ syntax tokens so Propshaft, Sprockets, Importmap, and Webpacker 5 / Webpack 4 hosts can serve or parse the SDK without external CDNs or `node_modules` transpilation.
+The `sentrace` gem SHALL ship synced ES2019-compatible ESM (`app/assets/javascripts/sentrace.js`) and browser global (`app/assets/javascripts/sentrace.browser.js`) bundles (`0.1.3`) inside the engine containing zero ES2020+ syntax tokens so Propshaft, Sprockets, Importmap, and Webpacker 5 / Webpack 4 hosts can serve or parse the SDK without external CDNs or `node_modules` transpilation.
 
 #### Scenario: Engine JavaScript bundles match built npm artifacts
 - **WHEN** the `sentrace` frontend package is built for release
-- **THEN** `app/assets/javascripts/sentrace.js` and `app/assets/javascripts/sentrace.browser.js` exist in the gem package tree, match the compiled ESM and browser bundles (`0.1.2`), and contain zero ES2020+ syntax tokens
+- **THEN** `app/assets/javascripts/sentrace.js` and `app/assets/javascripts/sentrace.browser.js` exist in the gem package tree, match the compiled ESM and browser bundles (`0.1.3`), and contain zero ES2020+ syntax tokens
 
 ### Requirement: Public programmatic frontend DSN helpers for SPA configuration endpoints
 Sentrace SHALL expose `Sentrace.frontend_dsn(base_url: nil, request: nil, project: nil)` and `Sentrace.resolve_frontend_dsn(base_url:, project: nil)` sharing the same precedence (`config.frontend_dsn` first, then `project || config.project_slug || config.project_id`), secret-stripping, mount-prefix resolution, thread-safe in-memory `[project_id, public_key]` cache, and non-raising fallback (`nil`) as `sentrace_meta_tags`.

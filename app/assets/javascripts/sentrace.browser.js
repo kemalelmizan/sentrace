@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
   // --- dsn.ts ---
-  const VERSION = "0.1.2";
+  const VERSION = "0.1.3";
   const SDK_NAME = "sentrace.javascript.browser";
   const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
@@ -833,10 +833,10 @@
     const classPart =
       typeof el.className === "string" && el.className.trim()
         ? `.${el.className
-            .trim()
-            .split(/\s+/)
-            .slice(0, 3)
-            .join(".")}`
+          .trim()
+          .split(/\s+/)
+          .slice(0, 3)
+          .join(".")}`
         : "";
     const typeAttr = typeof el.getAttribute === "function" ? el.getAttribute("type") : null;
     const attrPart = typeAttr ? `[type="${typeAttr}"]` : "";
@@ -877,12 +877,12 @@
         const fallbackFrame                         =
           ev && ev.filename
             ? {
-                filename: ev.filename,
-                function: "?",
-                lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
-                colno: typeof ev.colno === "number" ? ev.colno : undefined,
-                in_app: true
-              }
+              filename: ev.filename,
+              function: "?",
+              lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
+              colno: typeof ev.colno === "number" ? ev.colno : undefined,
+              in_app: true
+            }
             : undefined;
 
         hooks.onError(err, {
@@ -1266,7 +1266,7 @@
     const rawDoc = customDoc !== undefined && customDoc !== null ? customDoc : getGlobalObject().document;
     const doc = rawDoc                                 ;
     if (!doc || typeof doc.addEventListener !== "function" || typeof doc.removeEventListener !== "function") {
-      return () => {};
+      return () => { };
     }
 
     const onTurboVisit = (rawEvent         )       => {
@@ -1403,7 +1403,7 @@
     captureFn
   )             {
     if (!application || typeof application !== "object") {
-      return () => {};
+      return () => { };
     }
 
     let active = true;

@@ -54,7 +54,7 @@ The SDK SHALL serialize events as newline-delimited Sentry v7 envelopes sent to 
 #### Scenario: Delivering valid Sentry v7 envelope and redacting sensitive URL query parameters
 - **GIVEN** `sentrace` initialized with DSN `https://pub123@errors.example.com/sentrace/7` on page `https://shop.example.com/reset?token=secret123&step=2`
 - **WHEN** `captureMessage("Reset failed")` is called
-- **THEN** the SDK posts a 3-line Sentry v7 envelope to `https://errors.example.com/sentrace/api/7/envelope?sentry_key=pub123&sentry_version=7&sentry_client=sentrace-js/0.1.2` with `token=[REDACTED]` and `step=2` in `request.url`
+- **THEN** the SDK posts a 3-line Sentry v7 envelope to `https://errors.example.com/sentrace/api/7/envelope?sentry_key=pub123&sentry_version=7&sentry_client=sentrace-js/0.1.3` with `token=[REDACTED]` and `step=2` in `request.url`
 
 #### Scenario: Preserving domain session foreign keys and honoring allowFields in client URL scrubbing
 - **GIVEN** `sentrace` initialized with `allowFields: ["token_present"]` on URL `https://app.example.com/reviews?calibration_session_id=77&session_id=sec_1&token_present=1&access_token=sec_2`
@@ -62,7 +62,7 @@ The SDK SHALL serialize events as newline-delimited Sentry v7 envelopes sent to 
 - **THEN** `calibration_session_id=77` and `token_present=1` remain intact while `session_id=[REDACTED]` and `access_token=[REDACTED]` are masked
 
 ### Requirement: Zero-dependency ESM, CommonJS, TypeScript, and browser global package outputs
-The `sentrace` npm package (`0.1.2`) MUST declare zero runtime dependencies, ship ESM (`dist/index.mjs`), CommonJS (`dist/index.cjs`), TypeScript declarations (`dist/index.d.ts`), and an IIFE bundle (`dist/sentrace.browser.js` via `sentrace/browser` exposing `window.Sentrace`), and MUST emit zero ES2020+ syntax tokens across all published JavaScript bundles for ES2019 / Webpack 4 compatibility.
+The `sentrace` npm package (`0.1.3`) MUST declare zero runtime dependencies, ship ESM (`dist/index.mjs`), CommonJS (`dist/index.cjs`), TypeScript declarations (`dist/index.d.ts`), and an IIFE bundle (`dist/sentrace.browser.js` via `sentrace/browser` exposing `window.Sentrace`), and MUST emit zero ES2020+ syntax tokens across all published JavaScript bundles for ES2019 / Webpack 4 compatibility.
 
 #### Scenario: Importing sentrace from ESM, CommonJS, and browser global bundle
 - **WHEN** consumers load `sentrace` via ESM `import`, CommonJS `require`, or execute `dist/sentrace.browser.js` in a browser global scope

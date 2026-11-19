@@ -26,10 +26,10 @@ const repoRoot = path.resolve(pkgRoot, "../..");
 const require = createRequire(import.meta.url);
 const SentraceCjs = require("../dist/index.cjs");
 
-test("ESM dist/index.mjs exports 0.1.2 and delivers Sentry v7 envelopes end-to-end", async () => {
+test("ESM dist/index.mjs exports 0.1.3 and delivers Sentry v7 envelopes end-to-end", async () => {
   resetClient();
-  assert.equal(VERSION, "0.1.2");
-  assert.equal(SentraceDefault.VERSION, "0.1.2");
+  assert.equal(VERSION, "0.1.3");
+  assert.equal(SentraceDefault.VERSION, "0.1.3");
   assert.equal(getConfig(), null);
   assert.equal(isEnabled(), false);
   assert.equal(lastEventId(), undefined);
@@ -38,7 +38,7 @@ test("ESM dist/index.mjs exports 0.1.2 and delivers Sentry v7 envelopes end-to-e
   const cfg = init({
     dsn: "https://pub123@errors.example.com/sentrace/1",
     environment: "staging",
-    release: "v0.1.2",
+    release: "v0.1.3",
     autoInstrumentBrowser: false,
     railsIntegration: false,
     transport: () => ({
@@ -106,8 +106,8 @@ test("ESM dist/index.mjs exports 0.1.2 and delivers Sentry v7 envelopes end-to-e
 
 test("CommonJS dist/index.cjs exports matching API", async () => {
   SentraceCjs.resetClient();
-  assert.equal(SentraceCjs.VERSION, "0.1.2");
-  assert.equal(SentraceCjs.default.VERSION, "0.1.2");
+  assert.equal(SentraceCjs.VERSION, "0.1.3");
+  assert.equal(SentraceCjs.default.VERSION, "0.1.3");
   assert.equal(SentraceCjs.isEnabled(), false);
   assert.equal(SentraceCjs.lastEventId(), undefined);
 
@@ -160,7 +160,7 @@ test("IIFE dist/sentrace.browser.js attaches window.Sentrace cleanly and matches
 
   vm.runInNewContext(browserCode, sandbox);
   assert.ok(sandbox.Sentrace);
-  assert.equal(sandbox.Sentrace.VERSION, "0.1.2");
+  assert.equal(sandbox.Sentrace.VERSION, "0.1.3");
   assert.equal(sandbox.Sentrace.isEnabled(), false);
 
   const envelopes = [];
