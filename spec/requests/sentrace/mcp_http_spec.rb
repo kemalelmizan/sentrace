@@ -108,7 +108,8 @@ RSpec.describe "Sentrace Remote Streamable HTTP MCP Endpoint (/sentrace/mcp)", t
             ]
           }
         },
-        project: project
+        project: project,
+        received_at: Time.utc(2026, 11, 16, 4, 0, 5)
       )
     end
 

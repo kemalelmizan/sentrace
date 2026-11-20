@@ -34,7 +34,8 @@ RSpec.describe Sentrace::Mcp::Server do
         },
         "tags" => { "gateway" => "stripe" }
       },
-      project: project
+      project: project,
+      received_at: Time.utc(2026, 11, 16, 10, 30, 5)
     )
   end
 

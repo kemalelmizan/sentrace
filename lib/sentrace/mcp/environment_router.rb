@@ -160,6 +160,7 @@ module Sentrace
             sorted_issues = merged_issues.sort_by { |i| [ i["last_seen_at"].to_s, i["id"].to_i ] }.reverse
             sorted_issues = apply_optional_limit(sorted_issues, kwargs[:limit])
             base.merge(
+              "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
               "issues" => sorted_issues,
               "fingerprint_correlations" => build_fingerprint_correlations(merged_issues)
             )
@@ -167,7 +168,10 @@ module Sentrace
             merged_events = successes.flat_map { |p| Array(p["events"]) }
             sorted_events = merged_events.sort_by { |ev| [ ev["occurred_at"].to_s, ev["id"].to_i ] }.reverse
             sorted_events = apply_optional_limit(sorted_events, kwargs[:limit])
-            base.merge("events" => sorted_events)
+            base.merge(
+              "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
+              "events" => sorted_events
+            )
           when :get_error_trends
             series = successes.map do |p|
               {
@@ -189,14 +193,20 @@ module Sentrace
 
               { "environment" => p["environment"], "issue" => p["issue"] }
             end
-            base.merge("matches" => matches)
+            base.merge(
+              "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
+              "matches" => matches
+            )
           when :get_event
             matches = successes.filter_map do |p|
               next unless p["event"].is_a?(Hash)
 
               { "environment" => p["environment"], "event" => p["event"] }
             end
-            base.merge("matches" => matches)
+            base.merge(
+              "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
+              "matches" => matches
+            )
           else
             base.merge("results" => successes)
           end
@@ -231,10 +241,11 @@ module Sentrace
             envs = group.map { |i| i["environment"].to_s }.reject(&:empty?).uniq
             next if envs.size < 2
 
+            representative = select_correlation_representative(group)
             {
               "fingerprint" => fingerprint,
-              "exception_type" => group.first["exception_type"],
-              "message" => group.first["message"],
+              "exception_type" => representative["exception_type"],
+              "message" => representative["message"],
               "environments" => envs,
               "total_event_count" => group.sum { |i| i["event_count"].to_i },
               "issue_ids_by_environment" => group.each_with_object({}) do |item, acc|
@@ -242,6 +253,12 @@ module Sentrace
               end
             }
           end
+        end
+
+        def select_correlation_representative(group)
+          prod_items = group.select { |item| item["environment"].to_s.casecmp("production").zero? }
+          candidates = prod_items.any? ? prod_items : group
+          candidates.max_by { |item| [ item["last_seen_at"].to_s, item["id"].to_i ] } || group.first
         end
 
         def apply_optional_limit(items, raw_limit)

@@ -443,10 +443,39 @@ export function getIsolationScope(): Scope {
 export function withScope<T>(callback: (scope: Scope) => T): T {
   const forked = activeScope().clone();
   scopeStack.push(forked);
+  let isAsync = false;
+  const popForked = (): void => {
+    const idx = scopeStack.lastIndexOf(forked);
+    if (idx !== -1) {
+      scopeStack.splice(idx, 1);
+    }
+  };
+
   try {
-    return callback(forked);
+    const result = callback(forked);
+    if (
+      result !== null &&
+      result !== undefined &&
+      (typeof result === "object" || typeof result === "function") &&
+      typeof (result as { then?: unknown }).then === "function"
+    ) {
+      isAsync = true;
+      return (result as unknown as Promise<unknown>).then(
+        (resolved) => {
+          popForked();
+          return resolved;
+        },
+        (rejected) => {
+          popForked();
+          throw rejected;
+        }
+      ) as unknown as T;
+    }
+    return result;
   } finally {
-    scopeStack.pop();
+    if (!isAsync) {
+      popForked();
+    }
   }
 }
 

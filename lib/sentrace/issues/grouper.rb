@@ -6,18 +6,19 @@ module Sentrace
       PersistResult = Data.define(:event_id, :event_record_id, :issue_id, :duplicate)
 
       class << self
-        def persist!(project_id:, normalized_event:, fingerprint:)
+        def persist!(project_id:, normalized_event:, fingerprint:, now: Time.current)
           new.persist!(
             project_id: project_id,
             normalized_event: normalized_event,
-            fingerprint: fingerprint
+            fingerprint: fingerprint,
+            now: now
           )
         end
       end
 
-      def persist!(project_id:, normalized_event:, fingerprint:)
+      def persist!(project_id:, normalized_event:, fingerprint:, now: Time.current)
         level_int = Issue::LEVELS.fetch(normalized_event.level.to_sym, Issue::LEVELS[:error])
-        now = Time.current.utc
+        now_utc = now.utc
         occurred_at = normalized_event.occurred_at.utc
         received_at = normalized_event.received_at.utc
 
@@ -32,7 +33,7 @@ module Sentrace
             exception_type: normalized_event.exception_type,
             message: normalized_event.issue_message,
             occurred_at: occurred_at,
-            now: now
+            now: now_utc
           )
 
           event_record_id = insert_event_if_unique(
@@ -43,7 +44,7 @@ module Sentrace
             level_int: level_int,
             occurred_at: occurred_at,
             received_at: received_at,
-            now: now
+            now: now_utc
           )
 
           if event_record_id.nil?
@@ -62,7 +63,7 @@ module Sentrace
             exception_type: normalized_event.exception_type,
             message: normalized_event.issue_message,
             occurred_at: occurred_at,
-            now: now
+            now: now_utc
           )
 
           PersistResult.new(
@@ -159,18 +160,22 @@ module Sentrace
               SET event_count = event_count + 1,
                   first_seen_at = LEAST(first_seen_at, ?),
                   last_seen_at = GREATEST(last_seen_at, ?),
-                  level = ?,
-                  exception_type = COALESCE(?, exception_type),
-                  message = COALESCE(?, message),
-                  status = CASE WHEN status = ? THEN ? ELSE status END,
+                  level = CASE WHEN ? >= last_seen_at THEN ? ELSE level END,
+                  exception_type = CASE WHEN ? >= last_seen_at THEN COALESCE(?, exception_type) ELSE exception_type END,
+                  message = CASE WHEN ? >= last_seen_at THEN COALESCE(?, message) ELSE message END,
+                  status = CASE WHEN ? >= last_seen_at AND status = ? THEN ? ELSE status END,
                   updated_at = ?
               WHERE id = ?
             SQL
             occurred_at,
             occurred_at,
+            occurred_at,
             level_int,
+            occurred_at,
             exception_type,
+            occurred_at,
             message,
+            occurred_at,
             Issue::STATUSES.fetch(:resolved),
             Issue::STATUSES.fetch(:unresolved),
             now,

@@ -3,10 +3,11 @@ module Sentrace
     SLUG_FORMAT = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
     PUBLIC_KEY_FORMAT = /\A[A-Za-z0-9_-]{16,64}\z/
 
-    has_many :project_keys, dependent: :destroy
-    has_many :issues, dependent: :destroy
-    has_many :events, dependent: :destroy
+    has_many :events, dependent: :delete_all
+    has_many :issues, dependent: :delete_all
+    has_many :project_keys, dependent: :delete_all
 
+    before_validation :sanitize_name
     after_save :invalidate_runtime_caches
     after_destroy :invalidate_runtime_caches
 
@@ -96,6 +97,10 @@ module Sentrace
     end
 
     private
+      def sanitize_name
+        self.name = RequestSecurity.sanitize_single_line(name, max_chars: 120) unless name.nil?
+      end
+
       def invalidate_runtime_caches
         CaptureDispatcher.clear_cache! if defined?(CaptureDispatcher)
         FrontendDsnResolver.clear_cache! if defined?(FrontendDsnResolver)

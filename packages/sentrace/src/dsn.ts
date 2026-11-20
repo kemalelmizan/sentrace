@@ -141,6 +141,48 @@ export function buildEnvelopeEndpoint(dsn: ParsedDsn): string {
   return `${dsn.protocol}://${authority}${dsn.pathPrefix}/api/${dsn.projectId}/envelope?${query}`;
 }
 
+export function isSameOrAllowedOrigin(
+  rawUrl: string | undefined,
+  endpointUrl: string | null,
+  pageHref: string | undefined
+): boolean {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    return false;
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) && !trimmed.startsWith("//")) {
+    return true;
+  }
+
+  try {
+    const targetOrigin = new URL(trimmed, pageHref || "http://localhost").origin;
+    if (pageHref) {
+      try {
+        if (new URL(pageHref).origin === targetOrigin) {
+          return true;
+        }
+      } catch (_err) {
+        // Ignore invalid pageHref
+      }
+    }
+    if (endpointUrl) {
+      try {
+        if (new URL(endpointUrl).origin === targetOrigin) {
+          return true;
+        }
+      } catch (_err) {
+        // Ignore invalid endpointUrl
+      }
+    }
+    return false;
+  } catch (_err) {
+    return false;
+  }
+}
+
 export function scrubUrl(
   rawUrl: string | undefined,
   extraRedactFields: string[] = [],
@@ -184,6 +226,7 @@ export function scrubUrl(
 
     parsed.username = "";
     parsed.password = "";
+    parsed.hash = "";
 
     if (parsed.search) {
       const scrubbedParams = new URLSearchParams();
@@ -196,11 +239,11 @@ export function scrubUrl(
     }
 
     if (isRelative) {
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+      return `${parsed.pathname}${parsed.search}`;
     }
     return parsed.toString();
   } catch (_err) {
-    const withoutQuery = trimmed.split("?")[0];
-    return withoutQuery ? withoutQuery.replace(/\/\/[^/@]+@/, "//") : trimmed;
+    const withoutQueryOrHash = trimmed.split(/[?#]/)[0];
+    return withoutQueryOrHash ? withoutQueryOrHash.replace(/\/\/[^/@]+@/, "//") : trimmed;
   }
 }

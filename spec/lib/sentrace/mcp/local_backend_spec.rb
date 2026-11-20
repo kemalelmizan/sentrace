@@ -30,7 +30,8 @@ RSpec.describe Sentrace::Mcp::LocalBackend do
         "tags" => { "queue" => "critical" },
         "breadcrumbs" => [ { "category" => "job", "message" => "Started sync" } ]
       },
-      project: project
+      project: project,
+      received_at: occurred_at
     )
   end
 

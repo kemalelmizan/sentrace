@@ -139,11 +139,13 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `async_queue_size` | `256` | Bounded non-blocking `SizedQueue` capacity for transaction-isolated, fork-safe background persistence. |
 | `capture_dispatch` | `:async` | `:async` (`SizedQueue` worker thread) or `:inline` (isolated from open/aborted caller transactions). |
 | `frontend_dsn` | `nil` | Optional explicit public DSN override (auto-resolved from `project_slug` / `project_id` on same-origin apps when blank). |
+| `public_base_url` | `nil` | Optional canonical public `http(s)` base URL used when auto-resolving `sentrace_meta_tags` / `Sentrace.frontend_dsn` behind CDNs or caches. |
 | `release` | `ENV["APP_RELEASE"]` | Release label rendered by `sentrace_meta_tags`. |
-| `cors_allowed_origins` | `[]` | Allowed browser `Origin`s (`Array` of origins or `"*"`) for `/api/:project_id/envelope`. |
+| `cors_allowed_origins` | `[]` | Allowed browser `Origin`s (`Array` of origins or `"*"`) for `/api/:project_id/envelope`; unlisted cross-origin browser `POST`s are rejected with `403`. |
 | `retention_period` | `30.days` | How long normalized `sentrace_events` rows are retained before batch pruning. |
 | `orphan_issue_retention_period` | `7.days` | Grace period before deleting `sentrace_issues` with zero remaining events. |
 | `retention_batch_size` | `1000` | Maximum rows deleted per SQL statement during retention cleanup. |
+| `max_future_clock_skew` | `5.minutes` | Maximum future clock skew permitted on client `timestamp` before clamping `occurred_at` to `received_at`. |
 | `max_envelope_size` | `1.megabyte` | Pre-parse compressed and decompressed envelope byte ceiling (`413` if exceeded). |
 | `max_events_per_envelope` | `10` | Maximum error event items processed per HTTP envelope (`413` if exceeded). |
 | `max_envelope_items` | `50` | Maximum total items (events + discarded telemetry) scanned per envelope (`413` if exceeded). |
@@ -163,9 +165,9 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `internal_authenticator` | `nil` | Optional callable `->(request) { boolean }` for `/sentrace/internal/*` routes (defaults to MCP bearer token auth). |
 | `mcp_allowed_ips` | `[]` | Optional Array of IP/CIDR strings (e.g. `%w[10.0.0.0/8 203.0.113.5]`) enforced on `/sentrace/mcp` before bearer auth (`403` if outside allowlist). |
 | `internal_allowed_ips` | `[]` | Optional Array of IP/CIDR strings enforced on `/sentrace/internal/*` before auth (`403` if outside allowlist). |
-| `mcp_rate_limit_per_minute` | `120` | Per-IP 60-second request limit on `/sentrace/mcp` backed by `Rails.cache` (with in-memory fallback when `NullStore`), returning `429` + `Retry-After`. Set `nil` to disable. |
-| `mcp_auth_failure_limit_per_minute` | `20` | Per-IP 60-second limit on failed `/sentrace/mcp` bearer authentication attempts (`429` + `Retry-After`). Set `nil` to disable. |
-| `ingestion_rate_limit_per_minute` | `nil` | Optional per-project/IP 60-second rate limit on `/sentrace/api/:project_id/envelope` (`429` + `Retry-After`). |
+| `mcp_rate_limit_per_minute` | `120` | Per-IP 60-second request limit on `/sentrace/mcp` and `/sentrace/internal/*` backed by `Rails.cache` (with bounded 4,096-entry in-memory fallback when `NullStore`), returning `429` + `Retry-After`. Set `nil` to disable. |
+| `mcp_auth_failure_limit_per_minute` | `20` | Per-IP 60-second limit on failed `/sentrace/mcp` and `/sentrace/internal/*` authentication attempts (`429` + `Retry-After`). Set `nil` to disable. |
+| `ingestion_rate_limit_per_minute` | `300` | Per-project/IP 60-second rate limit on `/sentrace/api/:project_id/envelope` (`429` + `Retry-After`). Set `nil` to disable. |
 
 ### Rack / Puma Client Disconnects & Host RSpec Helpers
 
@@ -201,6 +203,7 @@ bin/rails "sentrace:projects:rotate_key[my-app]"
 bin/rails sentrace:mcp:tokens
 bin/rails "sentrace:mcp:tokens:create[staging]"
 READ_ONLY=true EXPIRES_IN_DAYS=30 bin/rails "sentrace:mcp:tokens:create[ci-readonly]"
+ADMIN=true EXPIRES_IN_DAYS=90 bin/rails "sentrace:mcp:tokens:create[ops-admin]"
 bin/rails "sentrace:mcp:tokens:rotate[staging]"
 bin/rails "sentrace:mcp:tokens:revoke[1]"
 ```

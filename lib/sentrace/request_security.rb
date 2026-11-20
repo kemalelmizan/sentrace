@@ -81,11 +81,22 @@ module Sentrace
         return false if raw_origin.empty?
         return true if raw_origin.casecmp("null").zero?
 
-        request_origin = normalize_http_origin(raw_origin)
-        expected_origin = normalize_http_origin(request.base_url.to_s)
-        return true if request_origin.nil? || expected_origin.nil?
+        !same_origin?(request)
+      end
 
-        request_origin != expected_origin
+      def same_origin?(request)
+        verified_same_origin_header?(request)
+      end
+
+      def sanitize_single_line(raw_value, max_chars: nil)
+        return nil if raw_value.nil?
+
+        cleaned = raw_value.to_s.dup.force_encoding(Encoding::UTF_8).scrub
+        cleaned.gsub!(/\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/, "")
+        cleaned.gsub!(/[\x00-\x1F\x7F\u0080-\u009F]/, " ")
+        cleaned.gsub!(/[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\u061C\uFEFF\u{E0000}-\u{E007F}]/, "")
+        cleaned.strip!
+        max_chars ? cleaned[0, max_chars] : cleaned
       end
 
       def forbidden_cookie_csrf?(request)

@@ -1,9 +1,12 @@
 module Sentrace
   module RateLimiter
     WINDOW_SECONDS = 60
+    MAX_MEMORY_ENTRIES = 4_096
+    PRUNE_INTERVAL_SECONDS = 5
 
     @memory_mutex = Mutex.new
     @memory_store = {}
+    @last_pruned_at = 0
 
     class << self
       def check!(bucket:, identifier:, limit:, increment: true)
@@ -30,7 +33,10 @@ module Sentrace
       end
 
       def reset!
-        @memory_mutex.synchronize { @memory_store.clear }
+        @memory_mutex.synchronize do
+          @memory_store.clear
+          @last_pruned_at = 0
+        end
       end
 
       private
@@ -74,6 +80,7 @@ module Sentrace
             if entry && entry[:expires_at] > now
               entry[:count] += 1
             else
+              @memory_store.shift if @memory_store.size >= MAX_MEMORY_ENTRIES && !@memory_store.key?(cache_key)
               @memory_store[cache_key] = { count: 1, expires_at: now + WINDOW_SECONDS }
             end
             @memory_store[cache_key][:count]
@@ -92,7 +99,9 @@ module Sentrace
 
         def prune_expired_memory_entries!(now)
           return if @memory_store.size < 1024
+          return if (now - @last_pruned_at) < PRUNE_INTERVAL_SECONDS && @memory_store.size < MAX_MEMORY_ENTRIES
 
+          @last_pruned_at = now
           @memory_store.delete_if { |_k, entry| entry[:expires_at] <= now }
         end
     end

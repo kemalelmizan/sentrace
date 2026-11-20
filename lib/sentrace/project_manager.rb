@@ -19,7 +19,8 @@ module Sentrace
       @io.puts format("%-6s %-24s %-28s %s", "ID", "SLUG", "NAME", "ACTIVE PUBLIC KEY")
       projects.each do |project|
         active_pub = project.active_key&.public_key || "(none)"
-        @io.puts format("%-6s %-24s %-28s %s", project.id, project.slug, project.name, active_pub)
+        safe_name = RequestSecurity.sanitize_single_line(project.name, max_chars: 120)
+        @io.puts format("%-6s %-24s %-28s %s", project.id, project.slug, safe_name, active_pub)
       end
       projects
     end

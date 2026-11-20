@@ -121,19 +121,39 @@ RSpec.describe Sentrace::McpToken do
       expect(described_class.authenticate(valid_raw)).to eq(valid_record)
     end
 
-    it "supports read_only and scopes on issue!, rotate!, and ensure!" do
+    it "supports read_only, admin, and scopes reconciliation on issue!, rotate!, and ensure!, and throttles last_used_at updates" do
       ro_record, _ro_raw = described_class.issue!(name: "ci-reader", read_only: true)
       expect(ro_record.scopes).to eq("read")
       expect(ro_record.read_only?).to be(true)
+      expect(ro_record.admin?).to be(false)
       expect(ro_record.allows_scope?("read")).to be(true)
       expect(ro_record.allows_scope?("write")).to be(false)
 
       rw_record, _rw_raw = described_class.rotate!(name: "ci-reader", scopes: %w[read write])
       expect(rw_record.scopes).to eq("read,write")
       expect(rw_record.read_only?).to be(false)
+      expect(rw_record.admin?).to be(false)
+
+      admin_record, admin_raw = described_class.issue!(name: "ops-\e[31madmin\u{E0041}", scopes: "read,write,admin")
+      expect(admin_record.name).to eq("ops-admin")
+      expect(admin_record.scopes).to eq("read,write,admin")
+      expect(admin_record.admin?).to be(true)
+
+      first_auth = described_class.authenticate(admin_raw)
+      first_used = first_auth.reload.last_used_at
+      expect(first_used).to be_present
+      expect(admin_record).not_to receive(:update_columns)
+      expect(described_class.authenticate(admin_raw)).to eq(admin_record)
+
+      pinned_raw = "snt_mcp_99998888777766665555444433332222"
+      seeded, _ = described_class.ensure!(name: "reconcile-tok", token: pinned_raw)
+      expect(seeded.scopes).to eq("read,write")
+      tightened, _ = described_class.ensure!(name: "reconcile-tok", token: pinned_raw, read_only: true, expires_in: 2.days)
+      expect(tightened.reload.scopes).to eq("read")
+      expect(tightened.expires_at).to be_present
 
       expect {
-        described_class.issue!(name: "bad-scope", scopes: "admin")
+        described_class.issue!(name: "bad-scope", scopes: "superuser")
       }.to raise_error(ArgumentError, /scopes must be a non-empty subset/)
     end
   end

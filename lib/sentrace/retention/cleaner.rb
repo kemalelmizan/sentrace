@@ -50,11 +50,12 @@ module Sentrace
                 DELETE FROM sentrace_events
                 WHERE id IN (
                   SELECT id FROM sentrace_events
-                  WHERE occurred_at < ?
+                  WHERE occurred_at < ? OR received_at < ?
                   ORDER BY occurred_at ASC
                   LIMIT ?
                 )
               SQL
+              cutoff,
               cutoff,
               batch_size
             ])

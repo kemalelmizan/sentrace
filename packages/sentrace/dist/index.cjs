@@ -142,6 +142,48 @@ function buildEnvelopeEndpoint(dsn           )         {
   return `${dsn.protocol}://${authority}${dsn.pathPrefix}/api/${dsn.projectId}/envelope?${query}`;
 }
 
+function isSameOrAllowedOrigin(
+  rawUrl                    ,
+  endpointUrl               ,
+  pageHref
+)          {
+  if (!rawUrl || typeof rawUrl !== "string") {
+    return false;
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) && !trimmed.startsWith("//")) {
+    return true;
+  }
+
+  try {
+    const targetOrigin = new URL(trimmed, pageHref || "http://localhost").origin;
+    if (pageHref) {
+      try {
+        if (new URL(pageHref).origin === targetOrigin) {
+          return true;
+        }
+      } catch (_err) {
+        // Ignore invalid pageHref
+      }
+    }
+    if (endpointUrl) {
+      try {
+        if (new URL(endpointUrl).origin === targetOrigin) {
+          return true;
+        }
+      } catch (_err) {
+        // Ignore invalid endpointUrl
+      }
+    }
+    return false;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function scrubUrl(
   rawUrl                    ,
   extraRedactFields           = [],
@@ -185,6 +227,7 @@ function scrubUrl(
 
     parsed.username = "";
     parsed.password = "";
+    parsed.hash = "";
 
     if (parsed.search) {
       const scrubbedParams = new URLSearchParams();
@@ -197,29 +240,18 @@ function scrubUrl(
     }
 
     if (isRelative) {
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+      return `${parsed.pathname}${parsed.search}`;
     }
     return parsed.toString();
   } catch (_err) {
-    const withoutQuery = trimmed.split("?")[0];
-    return withoutQuery ? withoutQuery.replace(/\/\/[^/@]+@/, "//") : trimmed;
+    const withoutQueryOrHash = trimmed.split(/[?#]/)[0];
+    return withoutQueryOrHash ? withoutQueryOrHash.replace(/\/\/[^/@]+@/, "//") : trimmed;
   }
 }
 
 // --- stacktrace.ts ---
-// V8 / Chromium / Edge / Node:
-//   at fnName (https://app.example.com/assets/app.js:12:34)
-//   at async Object.submit [as click] (https://app.example.com/assets/app.js:12:34)
-//   at https://app.example.com/assets/app.js:12:34
-const V8_FRAME_WITH_PARENS =
-  /^\s*at\s+(?:async\s+)?(?:new\s+)?(.+?)\s+\((?:eval at [^\s]+\s+\()?(.+?):(\d+):(\d+)\)?\)\s*$/;
-const V8_BARE_FRAME = /^\s*at\s+(?:async\s+)?(.+?):(\d+):(\d+)\s*$/;
-
-// Firefox / SpiderMonkey & Safari / JavaScriptCore:
-//   submitOrder@https://app.example.com/assets/app.js:12:34
-//   @https://app.example.com/assets/app.js:12:34
-//   global code@https://app.example.com/assets/app.js:1:10
-const GECKO_WEBKIT_FRAME = /^\s*(?:([^@]*)@)?(.+?):(\d+):(\d+)\s*$/;
+const MAX_STACK_LINE_CHARS = 4096;
+const MAX_STACK_LINES_SCANNED = 250;
 
 const NON_APP_URL_PATTERNS = [
   "/node_modules/",
@@ -262,50 +294,115 @@ function cleanFunctionName(raw                    )         {
   return cleaned;
 }
 
+function extractLineColSuffix(text        )                                                         {
+  const colSep = text.lastIndexOf(":");
+  if (colSep <= 0) {
+    return null;
+  }
+  const lineSep = text.lastIndexOf(":", colSep - 1);
+  if (lineSep <= 0) {
+    return null;
+  }
+  const colStr = text.slice(colSep + 1);
+  const lineStr = text.slice(lineSep + 1, colSep);
+  if (!/^\d+$/.test(lineStr) || !/^\d+$/.test(colStr)) {
+    return null;
+  }
+  const file = text.slice(0, lineSep).trim();
+  if (!file) {
+    return null;
+  }
+  return {
+    file,
+    lineno: Number.parseInt(lineStr, 10),
+    colno: Number.parseInt(colStr, 10)
+  };
+}
+
+function sanitizeFrameFilename(rawFilename        )         {
+  if (
+    /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(rawFilename) ||
+    rawFilename.indexOf("?") !== -1 ||
+    rawFilename.indexOf("#") !== -1
+  ) {
+    const scrubbed = scrubUrl(rawFilename);
+    return scrubbed || rawFilename;
+  }
+  return rawFilename;
+}
+
 function parseStackLine(line        )                    {
+  if (!line || line.length > MAX_STACK_LINE_CHARS) {
+    return null;
+  }
   const trimmed = line.trim();
-  if (!trimmed || trimmed.includes("[native code]")) {
+  if (!trimmed || trimmed.length > MAX_STACK_LINE_CHARS || trimmed.includes("[native code]")) {
     return null;
   }
 
-  let match = V8_FRAME_WITH_PARENS.exec(trimmed);
-  if (match) {
-    const filename = match[2] .trim();
-    return {
-      filename,
-      function: cleanFunctionName(match[1]),
-      lineno: Number.parseInt(match[3] , 10),
-      colno: Number.parseInt(match[4] , 10),
-      in_app: isInAppFilename(filename)
-    };
-  }
+  if (trimmed.startsWith("at ")) {
+    let rest = trimmed.slice(3).trim();
+    if (rest.startsWith("async ")) {
+      rest = rest.slice(6).trim();
+    }
 
-  match = V8_BARE_FRAME.exec(trimmed);
-  if (match) {
-    const filename = match[1] .trim();
-    return {
-      filename,
-      function: "?",
-      lineno: Number.parseInt(match[2] , 10),
-      colno: Number.parseInt(match[3] , 10),
-      in_app: isInAppFilename(filename)
-    };
-  }
-
-  if (!trimmed.startsWith("at ")) {
-    match = GECKO_WEBKIT_FRAME.exec(trimmed);
-    if (match) {
-      const filename = match[2] .trim();
-      if (filename.includes("/") || filename.includes(".") || filename.startsWith("http")) {
+    if (rest.endsWith(")") && rest.indexOf(" (") !== -1) {
+      const openParen = rest.indexOf(" (");
+      let fnRaw = rest.slice(0, openParen).trim();
+      if (fnRaw.startsWith("new ")) {
+        fnRaw = fnRaw.slice(4).trim();
+      }
+      let locPart = rest.slice(openParen + 2, rest.length - 1).trim();
+      if (locPart.startsWith("eval at ")) {
+        const innerOpen = locPart.indexOf(" (");
+        if (innerOpen !== -1 && locPart.endsWith(")")) {
+          locPart = locPart.slice(innerOpen + 2, locPart.length - 1).trim();
+        }
+      }
+      const parsedParen = extractLineColSuffix(locPart);
+      if (parsedParen) {
+        const cleanFile = sanitizeFrameFilename(parsedParen.file);
         return {
-          filename,
-          function: cleanFunctionName(match[1]),
-          lineno: Number.parseInt(match[3] , 10),
-          colno: Number.parseInt(match[4] , 10),
-          in_app: isInAppFilename(filename)
+          filename: cleanFile,
+          function: cleanFunctionName(fnRaw),
+          lineno: parsedParen.lineno,
+          colno: parsedParen.colno,
+          in_app: isInAppFilename(cleanFile)
         };
       }
     }
+
+    const parsedBare = extractLineColSuffix(rest);
+    if (parsedBare) {
+      const cleanBareFile = sanitizeFrameFilename(parsedBare.file);
+      return {
+        filename: cleanBareFile,
+        function: "?",
+        lineno: parsedBare.lineno,
+        colno: parsedBare.colno,
+        in_app: isInAppFilename(cleanBareFile)
+      };
+    }
+
+    return null;
+  }
+
+  const atIdx = trimmed.indexOf("@");
+  const fnPart = atIdx !== -1 ? trimmed.slice(0, atIdx) : undefined;
+  const locPart = atIdx !== -1 ? trimmed.slice(atIdx + 1).trim() : trimmed;
+  const parsedGecko = extractLineColSuffix(locPart);
+  if (
+    parsedGecko &&
+    (parsedGecko.file.includes("/") || parsedGecko.file.includes(".") || parsedGecko.file.startsWith("http"))
+  ) {
+    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file);
+    return {
+      filename: cleanGeckoFile,
+      function: cleanFunctionName(fnPart),
+      lineno: parsedGecko.lineno,
+      colno: parsedGecko.colno,
+      in_app: isInAppFilename(cleanGeckoFile)
+    };
   }
 
   return null;
@@ -321,8 +418,10 @@ function parseStackFrames(stack                    , maxFrames = 50)            
   }
 
   const newestFirst               = [];
-  for (const line of stack.split(/\r?\n/)) {
-    const frame = parseStackLine(line);
+  const rawLines = stack.split(/\r?\n/);
+  const scanLimit = Math.min(rawLines.length, MAX_STACK_LINES_SCANNED);
+  for (let i = 0; i < scanLimit; i += 1) {
+    const frame = parseStackLine(rawLines[i] );
     if (frame) {
       newestFirst.push(frame);
     }
@@ -1045,7 +1144,12 @@ function installBrowserInstrumentation(hooks                             )      
           }
           const status = response && typeof response.status === "number" ? response.status : undefined;
 
-          if (requestId && status !== undefined && status >= 400) {
+          if (
+            requestId &&
+            status !== undefined &&
+            status >= 400 &&
+            isSameOrAllowedOrigin(rawUrl, hooks.endpointUrl, win.location ? win.location.href : undefined)
+          ) {
             hooks.onCorrelatedRequestId(requestId);
           }
 
@@ -1138,7 +1242,12 @@ function installBrowserInstrumentation(hooks                             )      
             }
           }
 
-          if (requestId && status !== undefined && status >= 400) {
+          if (
+            requestId &&
+            status !== undefined &&
+            status >= 400 &&
+            isSameOrAllowedOrigin(meta.url, hooks.endpointUrl, win.location ? win.location.href : undefined)
+          ) {
             hooks.onCorrelatedRequestId(requestId);
           }
 
@@ -1846,10 +1955,39 @@ function getIsolationScope()        {
 function withScope   (callback                     )    {
   const forked = activeScope().clone();
   scopeStack.push(forked);
+  let isAsync = false;
+  const popForked = ()       => {
+    const idx = scopeStack.lastIndexOf(forked);
+    if (idx !== -1) {
+      scopeStack.splice(idx, 1);
+    }
+  };
+
   try {
-    return callback(forked);
+    const result = callback(forked);
+    if (
+      result !== null &&
+      result !== undefined &&
+      (typeof result === "object" || typeof result === "function") &&
+      typeof (result                      ).then === "function"
+    ) {
+      isAsync = true;
+      return (result                               ).then(
+        (resolved) => {
+          popForked();
+          return resolved;
+        },
+        (rejected) => {
+          popForked();
+          throw rejected;
+        }
+      )                ;
+    }
+    return result;
   } finally {
-    scopeStack.pop();
+    if (!isAsync) {
+      popForked();
+    }
   }
 }
 
@@ -1983,6 +2121,7 @@ const Sentrace = {
   parseDsn,
   formatPublicDsn,
   buildEnvelopeEndpoint,
+  isSameOrAllowedOrigin,
   scrubUrl,
   generateEventId,
   serializeEnvelope,

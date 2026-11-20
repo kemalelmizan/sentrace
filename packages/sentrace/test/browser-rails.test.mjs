@@ -625,3 +625,57 @@ test("Scope rejects prototype-pollution keys and Rails/browser instrumentation r
     Sentrace.resetClient();
   }
 });
+
+test("Async withScope retains isolated scope across await boundaries and cross-origin fetch errors do not overwrite request_id", async () => {
+  Sentrace.resetClient();
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const prevFetch = globalThis.fetch;
+
+  const { fakeWindow, fakeDocument } = createFakeBrowserEnv({
+    "sentrace-dsn": "https://pub_origin@shop.example.com/sentrace/5",
+    "sentrace-request-id": "req-trusted-same-origin"
+  });
+  const mem = createMemoryTransport();
+
+  try {
+    globalThis.window = fakeWindow;
+    globalThis.document = fakeDocument;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("evil-third-party.example")) {
+        return {
+          status: 500,
+          headers: {
+            get: (k) => (k.toLowerCase() === "x-request-id" ? "req-spoofed-cross-origin" : null)
+          }
+        };
+      }
+      return { status: 200, headers: { get: () => null } };
+    };
+
+    Sentrace.init({ transport: mem.factory });
+
+    // Cross-origin 500 response MUST NOT overwrite global scope's trusted Rails request_id
+    await globalThis.fetch("https://evil-third-party.example/widget");
+
+    await Sentrace.withScope(async (scope) => {
+      scope.setTag("async_flow", "checkout");
+      await Promise.resolve();
+      Sentrace.captureException(new Error("Async failure after await"));
+    });
+
+    Sentrace.captureMessage("Outside async scope");
+
+    assert.equal(mem.envelopes.length, 2);
+    assert.equal(mem.envelopes[0].event.tags.request_id, "req-trusted-same-origin");
+    assert.equal(mem.envelopes[0].event.tags.async_flow, "checkout");
+    assert.equal(mem.envelopes[1].event.tags.async_flow, undefined);
+
+    await Sentrace.close();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    globalThis.fetch = prevFetch;
+    Sentrace.resetClient();
+  }
+});

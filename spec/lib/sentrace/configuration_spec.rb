@@ -19,16 +19,18 @@ RSpec.describe Sentrace::Configuration do
       expect(config.async_queue_size).to eq(256)
       expect(config.capture_dispatch).to eq(:async)
       expect(config.frontend_dsn).to be_nil
+      expect(config.public_base_url).to be_nil
       expect(config.cors_allowed_origins).to eq([])
       expect(config.retention_period).to eq(30.days)
       expect(config.orphan_issue_retention_period).to eq(7.days)
       expect(config.retention_batch_size).to eq(1_000)
+      expect(config.max_future_clock_skew).to eq(5.minutes)
       expect(config.internal_authenticator).to be_nil
       expect(config.mcp_allowed_ips).to eq([])
       expect(config.internal_allowed_ips).to eq([])
       expect(config.mcp_rate_limit_per_minute).to eq(120)
       expect(config.mcp_auth_failure_limit_per_minute).to eq(20)
-      expect(config.ingestion_rate_limit_per_minute).to be_nil
+      expect(config.ingestion_rate_limit_per_minute).to eq(300)
       expect(config.max_envelope_size).to eq(1.megabyte)
       expect(config.max_events_per_envelope).to eq(10)
       expect(config.max_envelope_items).to eq(50)

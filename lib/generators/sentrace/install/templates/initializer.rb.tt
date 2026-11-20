@@ -8,10 +8,13 @@ Sentrace.configure do |config|
   # config.sample_rate = 1.0
   # config.async_queue_size = 256
 
-  # Optional explicit public DSN override (only needed for cross-origin SPAs or CDN hosts):
+  # Optional explicit public DSN or canonical public base URL override
+  # (recommended behind CDNs/caches; required for cross-origin SPAs):
   # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
+  # config.public_base_url = ENV["SENTRACE_PUBLIC_BASE_URL"]
   config.release = ENV["APP_RELEASE"]
   # config.cors_allowed_origins = []
+  # config.ingestion_rate_limit_per_minute = 300
 
   config.retention_period = 30.days
   config.orphan_issue_retention_period = 7.days

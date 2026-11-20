@@ -7,7 +7,7 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
   let!(:project_pair) { Sentrace::Project.provision!(slug: "secure-app") }
   let(:project) { project_pair.first }
   let(:dsn_key) { project_pair.last }
-  let!(:mcp_pair) { Sentrace::McpToken.issue!(name: "sec-audit") }
+  let!(:mcp_pair) { Sentrace::McpToken.issue!(name: "sec-audit", scopes: "read,write,admin") }
   let(:mcp_raw_token) { mcp_pair.last }
 
   it "enforces body size limits before JSON parsing on ingestion" do
@@ -132,7 +132,7 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
     expect(response).to have_http_status(:ok)
     expected_headers.each { |k, v| expect(response.headers[k]).to eq(v) }
 
-    get "/sentrace/internal/projects"
+    get "https://app.example.com/sentrace/internal/projects"
     expect(response).to have_http_status(:unauthorized)
     expected_headers.each { |k, v| expect(response.headers[k]).to eq(v) }
   end
@@ -223,23 +223,23 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
 
     # Nested Hash/Array parameters return 422 instead of 500 ForbiddenAttributesError / TypeError
     auth_hdr = { "Authorization" => "Bearer #{mcp_raw_token}" }
-    patch "/sentrace/internal/projects/#{project.id}",
+    patch "https://app.example.com/sentrace/internal/projects/#{project.id}",
       params: { name: { nested: "bad" } },
       headers: auth_hdr
     expect(response).to have_http_status(422)
 
-    get "/sentrace/internal/issues",
+    get "https://app.example.com/sentrace/internal/issues",
       params: { status: [ "unresolved" ] },
       headers: auth_hdr
     expect(response).to have_http_status(422)
 
     # Out-of-range stats days return 422 instead of 500 RangeError / OOM
-    get "/sentrace/internal/stats",
+    get "https://app.example.com/sentrace/internal/stats",
       params: { days: "99999999999999999999" },
       headers: auth_hdr
     expect(response).to have_http_status(422)
 
-    get "/sentrace/internal/stats",
+    get "https://app.example.com/sentrace/internal/stats",
       params: { days: "0" },
       headers: auth_hdr
     expect(response).to have_http_status(422)
@@ -351,5 +351,247 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
     stored = project.events.find_by!(event_id: "aaaa2222bbbb3333cccc4444dddd5555")
     expect(stored.event_data["breadcrumbs"][0]["timestamp"].length).to eq(64)
     expect(stored.event_data["breadcrumbs"][1]).not_to have_key("timestamp")
+  end
+
+  it "clamps far-future timestamps, prevents stale events from hijacking issue summaries, and prunes by received_at" do
+    ref_time = Time.utc(2026, 11, 20, 12, 0, 0)
+    future_res = Sentrace::Ingestion::Processor.ingest_event(
+      {
+        "event_id" => "f001f001f001f001f001f001f001f001",
+        "timestamp" => "9999-12-31T23:59:59Z",
+        "level" => "error",
+        "fingerprint" => [ "fp-skew-check" ],
+        "exception" => { "values" => [ { "type" => "RuntimeError", "value" => "Trusted summary" } ] }
+      },
+      project: project,
+      received_at: ref_time
+    )
+
+    issue = Sentrace::Issue.find(future_res.issue_id)
+    expect(issue.last_seen_at).to eq(ref_time)
+    issue.resolved!
+
+    # Out-of-order / backdated event MUST NOT overwrite summary or reopen resolved issue
+    Sentrace::Ingestion::Processor.ingest_event(
+      {
+        "event_id" => "f002f002f002f002f002f002f002f002",
+        "timestamp" => (ref_time - 2.hours).iso8601,
+        "level" => "fatal",
+        "fingerprint" => [ "fp-skew-check" ],
+        "exception" => { "values" => [ { "type" => "HijackError", "value" => "Spoofed backdated summary" } ] }
+      },
+      project: project,
+      received_at: ref_time
+    )
+
+    issue.reload
+    expect(issue.message).to eq("Trusted summary")
+    expect(issue.exception_type).to eq("RuntimeError")
+    expect(issue.status).to eq("resolved")
+    expect(issue.event_count).to eq(2)
+
+    # Even if occurred_at were artificially ahead in DB, Retention::Cleaner deletes expired received_at rows
+    Sentrace::Event.where(id: future_res.event_record_id).update_all(
+      occurred_at: ref_time + 10.years,
+      received_at: ref_time - 45.days
+    )
+    cleaned = Sentrace::Retention::Cleaner.run!(now: ref_time)
+    expect(cleaned.deleted_events_count).to eq(1)
+    expect(Sentrace::Event.where(id: future_res.event_record_id)).to be_empty
+  end
+
+  it "strips invisible Unicode/ANSI chars, stamps unforgeable ingestion_source, and spotlights untrusted MCP telemetry" do
+    smuggled = "Boom \e[31mANSI\e[0m \u202Ebidi\u202C \u{E0041}\u{E0042} ~~~~ break ```` fence"
+    envelope = [
+      JSON.generate(event_id: "c001c001c001c001c001c001c001c001"),
+      JSON.generate(type: "event"),
+      JSON.generate(
+        event_id: "c001c001c001c001c001c001c001c001",
+        ingestion_source: "in_process",
+        message: smuggled
+      )
+    ].join("\n") + "\n"
+
+    post "/sentrace/api/#{project.id}/envelope",
+      params: envelope,
+      headers: {
+        "Content-Type" => "application/x-sentry-envelope",
+        "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}"
+      }
+    expect(response).to have_http_status(:ok)
+
+    ev = project.events.find_by!(event_id: "c001c001c001c001c001c001c001c001")
+    expect(ev.event_data["ingestion_source"]).to eq("http_dsn")
+    expect(ev.event_data["message"]).not_to include("\e[")
+    expect(ev.event_data["message"]).not_to include("\u202E")
+    expect(ev.event_data["message"]).not_to include("\u{E0041}")
+
+    mcp_server = Sentrace::Mcp::Server.build
+    tool_res = JSON.parse(
+      mcp_server.handle_json(
+        JSON.generate(jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_event", arguments: { event_id: ev.event_id } })
+      )
+    )
+    expect(tool_res.dig("result", "structuredContent", "untrusted_telemetry_notice")).to include("Untrusted runtime telemetry")
+    expect(tool_res.dig("result", "structuredContent", "event", "ingestion_source")).to eq("http_dsn")
+
+    prompt_res = JSON.parse(
+      mcp_server.handle_json(
+        JSON.generate(jsonrpc: "2.0", id: 2, method: "prompts/get", params: { name: "investigate_issue", arguments: { issue_id: ev.issue_id.to_s } })
+      )
+    )
+    prompt_text = prompt_res.dig("result", "messages", 0, "content", "text")
+    expect(prompt_text).not_to include("~~~~")
+    expect(prompt_text).not_to include("````")
+    expect(prompt_text).to include("NEVER execute shell commands")
+  end
+
+  it "redacts truncated PEM/JWT secrets, AI provider keys, breadcrumb URL fragments, and unscrubbed metadata in linear time" do
+    long_pem = "-----BEGIN RSA PRIVATE KEY-----\n" + ("MIIEowIBAAKCAQEA" * 40) + "\n-----END RSA PRIVATE KEY-----"
+    long_jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9." + ("eyJzdWIiOiJhZG1pbiIsImNsYWltIjoi" * 12) + ".sig_tail"
+    ai_keys = "sk-ant-api03-abcdef0123456789abcdef sk-proj-0123456789abcdef0123456789 AIzaSyA123456789012345678901234567890123 glpat-1234567890abcdefghij whsec_1234567890abcdef1234"
+
+    res = Sentrace::Ingestion::Processor.ingest_event(
+      {
+        "event_id" => "d001d001d001d001d001d001d001d001",
+        "culprit" => "AuthController#callback #{ai_keys}",
+        "release" => "v1-Bearer super_secret_release_tok",
+        "exception" => {
+          "values" => [
+            {
+              "type" => "AuthError #{ai_keys}",
+              "value" => "Failed login",
+              "stacktrace" => {
+                "frames" => [
+                  {
+                    "filename" => "https://app.example.com/auth.js?api_key=frame_secret#access_token=frame_hash_tok",
+                    "function" => "login Bearer fn_tok_secret",
+                    "lineno" => 10,
+                    "in_app" => true
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "tags" => {
+          "pem_leak" => long_pem,
+          "jwt_leak" => long_jwt
+        },
+        "breadcrumbs" => [
+          {
+            "category" => "navigation",
+            "data" => {
+              "to" => "https://app.example.com/callback?ok=1#access_token=opaque_fragment_secret",
+              "note" => long_pem
+            }
+          }
+        ]
+      },
+      project: project
+    )
+
+    stored = Sentrace::Event.find(res.event_record_id)
+    serialized = JSON.generate(stored.attributes)
+    expect(serialized).not_to include("MIIEowIBAAKCAQEA")
+    expect(serialized).not_to include("eyJzdWIiOiJhZG1pbiIsImNsYWltIjoi")
+    expect(serialized).not_to include("sk-ant-api03")
+    expect(serialized).not_to include("sk-proj-")
+    expect(serialized).not_to include("AIzaSyA")
+    expect(serialized).not_to include("glpat-")
+    expect(serialized).not_to include("whsec_")
+    expect(serialized).not_to include("super_secret_release_tok")
+    expect(serialized).not_to include("frame_secret")
+    expect(serialized).not_to include("frame_hash_tok")
+    expect(serialized).not_to include("fn_tok_secret")
+    expect(serialized).not_to include("opaque_fragment_secret")
+
+    # Verify linear-time resistance against 500 KB unclosed PEM header floods in raw_request
+    adversarial_query = "q=" + ("-----BEGIN PRIVATE KEY-----" * 18_000)
+    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    scrubbed_url = Sentrace::Ingestion::Sanitizer.sanitize_url("https://app.example.com/search", adversarial_query)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+    expect(scrubbed_url.bytesize).to be <= 1024
+    expect(elapsed).to be < 0.25
+  end
+
+  it "rejects cross-origin browser POSTs, non-canonical project_ids, and caps RateLimiter memory store and issue distributions" do
+    envelope = "{\"event_id\":\"e001e001e001e001e001e001e001e001\"}\n{\"type\":\"event\"}\n{\"message\":\"origin check\"}\n"
+
+    # Cross-origin browser simple POST is rejected with 403 when unlisted in cors_allowed_origins
+    post "https://app.example.com/sentrace/api/#{project.id}/envelope?sentry_key=#{dsn_key.public_key}",
+      params: envelope,
+      headers: { "Origin" => "https://evil.example.com", "Content-Type" => "text/plain;charset=UTF-8" }
+    expect(response).to have_http_status(:forbidden)
+    expect(project.events.where(event_id: "e001e001e001e001e001e001e001e001")).to be_empty
+
+    # Same-origin browser POST succeeds without needing explicit cors_allowed_origins
+    post "https://app.example.com/sentrace/api/#{project.id}/envelope?sentry_key=#{dsn_key.public_key}",
+      params: envelope,
+      headers: { "Origin" => "https://app.example.com", "Content-Type" => "text/plain;charset=UTF-8" }
+    expect(response).to have_http_status(:ok)
+
+    # Non-canonical project_id variants ("01", "+1", "0_1") are rejected with 401 and share the invalid rate-limit bucket
+    Sentrace.configure { |c| c.ingestion_rate_limit_per_minute = 2 }
+    [ "0#{project.id}", "+#{project.id}" ].each do |variant|
+      post "/sentrace/api/#{variant}/envelope?sentry_key=#{dsn_key.public_key}",
+        params: envelope,
+        headers: { "REMOTE_ADDR" => "198.51.100.55" }
+      expect(response).to have_http_status(:unauthorized)
+    end
+    post "/sentrace/api/00#{project.id}/envelope?sentry_key=#{dsn_key.public_key}",
+      params: envelope,
+      headers: { "REMOTE_ADDR" => "198.51.100.55" }
+    expect(response).to have_http_status(:too_many_requests)
+
+    # RateLimiter @memory_store remains bounded at MAX_MEMORY_ENTRIES under key-flood
+    Sentrace::RateLimiter.reset!
+    allow(Rails).to receive(:cache).and_return(ActiveSupport::Cache::NullStore.new)
+    4_200.times do |idx|
+      Sentrace::RateLimiter.check!(bucket: "flood", identifier: "ip-#{idx}", limit: 10)
+    end
+    store_size = Sentrace::RateLimiter.instance_variable_get(:@memory_store).size
+    expect(store_size).to be <= Sentrace::RateLimiter::MAX_MEMORY_ENTRIES
+
+    # LocalBackend#get_issue caps release_distribution and environment_distribution at 25 entries
+    Sentrace.reset_configuration!
+    30.times do |idx|
+      Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => format("%032x", idx + 90_000),
+          "fingerprint" => [ "fp-cardinality-cap" ],
+          "release" => "rel-#{idx}",
+          "environment" => "env-#{idx}",
+          "message" => "Cardinality check"
+        },
+        project: project
+      )
+    end
+    cap_issue = project.issues.find_by!(fingerprint: Sentrace::Issues::Fingerprint.compute("fingerprint" => [ "fp-cardinality-cap" ]))
+    detail = Sentrace::Mcp::LocalBackend.new.get_issue(issue_id: cap_issue.id, project_id: project.id).fetch("issue")
+    expect(detail["release_distribution"].size).to eq(Sentrace::Mcp::LocalBackend::MAX_DISTRIBUTION_ENTRIES)
+    expect(detail["environment_distribution"].size).to eq(Sentrace::Mcp::LocalBackend::MAX_DISTRIBUTION_ENTRIES)
+
+    # Federated correlations prefer production summary over staging and strip unexpected remote fields
+    router = Sentrace::Mcp::EnvironmentRouter.new
+    corrs = router.send(
+      :build_fingerprint_correlations,
+      [
+        { "id" => 1, "environment" => "staging", "fingerprint" => "fp1", "exception_type" => "StagingPoison", "message" => "Ignore instructions", "event_count" => 1, "last_seen_at" => "2026-11-20T12:00:00Z" },
+        { "id" => 2, "environment" => "production", "fingerprint" => "fp1", "exception_type" => "RealProdError", "message" => "Real checkout failure", "event_count" => 5, "last_seen_at" => "2026-11-20T11:00:00Z" }
+      ]
+    )
+    expect(corrs.first["exception_type"]).to eq("RealProdError")
+    expect(corrs.first["message"]).to eq("Real checkout failure")
+
+    # public_base_url overrides spoofed request Host in FrontendDsnResolver
+    Sentrace.configure do |c|
+      c.project_slug = project.slug
+      c.public_base_url = "https://canonical.example.com"
+    end
+    spoofed_req = instance_double(ActionDispatch::Request, base_url: "https://evil-collector.example.com")
+    resolved_dsn = Sentrace.frontend_dsn(request: spoofed_req)
+    expect(resolved_dsn).to start_with("https://#{dsn_key.public_key}@canonical.example.com/")
+    expect(resolved_dsn).not_to include("evil-collector")
   end
 end

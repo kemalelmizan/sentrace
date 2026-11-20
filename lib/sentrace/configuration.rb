@@ -39,10 +39,13 @@ module Sentrace
     LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1 [::1]].freeze
     DEFAULT_MAX_EVENTS_PER_ENVELOPE = 10
     DEFAULT_MAX_ENVELOPE_ITEMS = 50
+    DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE = 300
+    DEFAULT_MAX_FUTURE_CLOCK_SKEW = 5.minutes
 
     POSITIVE_NUMERIC_ATTRIBUTES = %i[
       retention_period
       orphan_issue_retention_period
+      max_future_clock_skew
       max_envelope_size
       max_message_bytes
       max_stack_frames
@@ -81,11 +84,13 @@ module Sentrace
       :async_queue_size,
       :capture_dispatch,
       :frontend_dsn,
+      :public_base_url,
       :release,
       :cors_allowed_origins,
       :retention_period,
       :orphan_issue_retention_period,
       :retention_batch_size,
+      :max_future_clock_skew,
       :max_envelope_size,
       :max_events_per_envelope,
       :max_envelope_items,
@@ -127,11 +132,13 @@ module Sentrace
       @async_queue_size = 256
       @capture_dispatch = :async
       @frontend_dsn = nil
+      @public_base_url = nil
       @release = ENV["APP_RELEASE"]
       @cors_allowed_origins = []
       @retention_period = 30.days
       @orphan_issue_retention_period = 7.days
       @retention_batch_size = 1_000
+      @max_future_clock_skew = DEFAULT_MAX_FUTURE_CLOCK_SKEW
       @max_envelope_size = 1.megabyte
       @max_events_per_envelope = DEFAULT_MAX_EVENTS_PER_ENVELOPE
       @max_envelope_items = DEFAULT_MAX_ENVELOPE_ITEMS
@@ -152,7 +159,7 @@ module Sentrace
       @internal_allowed_ips = []
       @mcp_rate_limit_per_minute = 120
       @mcp_auth_failure_limit_per_minute = 20
-      @ingestion_rate_limit_per_minute = nil
+      @ingestion_rate_limit_per_minute = DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE
       @user_hash_secret = nil
       @remote_timeout = 5.0
       @remote_ping_timeout = 2.5
@@ -369,6 +376,8 @@ module Sentrace
           Dsn.parse(frontend_dsn.to_s)
         end
 
+        validate_public_base_url!
+
         unless release.nil? || release.is_a?(String) || release.is_a?(Symbol)
           raise ConfigurationError, "release must be a String, Symbol, or nil"
         end
@@ -376,6 +385,24 @@ module Sentrace
         validate_cors_allowed_origins!
       rescue InvalidDsnError => e
         raise ConfigurationError, "frontend_dsn is invalid: #{e.message}"
+      end
+
+      def validate_public_base_url!
+        return if public_base_url.nil?
+
+        unless public_base_url.is_a?(String)
+          raise ConfigurationError, "public_base_url must be a String or nil"
+        end
+
+        stripped = public_base_url.strip
+        return if stripped.empty?
+
+        uri = URI.parse(stripped)
+        if !uri.is_a?(URI::HTTP) || uri.host.nil? || uri.host.empty? || uri.userinfo || uri.query || uri.fragment
+          raise ConfigurationError, "public_base_url must be a valid HTTP(S) base URL without credentials, query, or fragment"
+        end
+      rescue URI::InvalidURIError => e
+        raise ConfigurationError, "public_base_url is invalid: #{e.message}"
       end
 
       def validate_cors_allowed_origins!

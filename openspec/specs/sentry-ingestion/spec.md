@@ -90,17 +90,17 @@ An application configured with the official `sentry-ruby` SDK (`~> 5.28`) — ei
 - **THEN** Sentrace persists the normalized event, stack frames, breadcrumb, and metadata in-process without opening an HTTP socket
 
 ### Requirement: Cross-origin browser CORS preflight and response headers
-The ingestion endpoint SHALL handle `OPTIONS /api/:project_id/envelope` preflight requests and attach `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, and `Access-Control-Allow-Headers` on `OPTIONS` and `POST` responses when the request `Origin` matches `cors_allowed_origins`, omitting CORS headers for unlisted origins.
+The ingestion endpoint SHALL handle `OPTIONS /api/:project_id/envelope` preflight requests, attach `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, and `Access-Control-Allow-Headers` on `OPTIONS` and `POST` responses when the request `Origin` matches `cors_allowed_origins`, omit CORS headers on `OPTIONS` for unlisted origins, and reject cross-origin browser `POST` requests with HTTP `403` unless `Origin` is same-origin or matched by `cors_allowed_origins`.
 
 #### Scenario: Allowed browser origin receives preflight and POST CORS headers
 - **GIVEN** `cors_allowed_origins = ["https://spa.example.com"]`
 - **WHEN** a browser sends `OPTIONS /api/1/envelope` and `POST /api/1/envelope` with `Origin: https://spa.example.com`
 - **THEN** `OPTIONS` returns HTTP `204` with `Access-Control-Allow-Origin: https://spa.example.com` and `Vary: Origin`, and `POST` includes matching CORS headers
 
-#### Scenario: Unlisted browser origin does not receive CORS allow headers
+#### Scenario: Unlisted browser origin does not receive CORS allow headers and cannot POST cross-origin envelopes
 - **GIVEN** `cors_allowed_origins = ["https://spa.example.com"]`
-- **WHEN** a request arrives with `Origin: https://evil.example.com`
-- **THEN** the response omits `Access-Control-Allow-Origin`
+- **WHEN** `OPTIONS` or `POST` arrives with `Origin: https://evil.example.com`
+- **THEN** `OPTIONS` omits `Access-Control-Allow-Origin` and `POST` responds with HTTP `403` without persisting events
 
 ### Requirement: Browser SDK and sentry-browser wire compatibility
 Sentrace SHALL ingest Sentry v7 envelopes sent by both the `sentrace` npm browser SDK and `@sentry/browser`-formatted payloads (`sentry_key` query authentication, `platform: "javascript"`, `colno` frames, `extra`, and `X-Request-Id` correlation).

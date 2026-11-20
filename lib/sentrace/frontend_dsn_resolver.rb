@@ -22,7 +22,7 @@ module Sentrace
         target = blank_value?(project) ? (non_blank(config.project_slug) || non_blank(config.project_id)) : project
         return nil if blank_value?(target)
 
-        effective_base_url = resolve_mounted_base_url(base_url: base_url, request: request)
+        effective_base_url = resolve_mounted_base_url(base_url: base_url, request: request, config: config)
         return nil unless effective_base_url
 
         tuple = resolve_project_key_tuple(target)
@@ -101,18 +101,22 @@ module Sentrace
           end
         end
 
-        def resolve_mounted_base_url(base_url:, request:)
-          raw_base = non_blank(base_url) || (request.respond_to?(:base_url) ? non_blank(request.base_url) : nil)
+        def resolve_mounted_base_url(base_url:, request:, config: Sentrace.configuration)
+          raw_base = non_blank(base_url) ||
+            non_blank(config&.public_base_url) ||
+            (request.respond_to?(:base_url) ? non_blank(request.base_url) : nil)
           return nil unless raw_base
 
-          uri = URI.parse(raw_base)
+          uri = URI.parse(raw_base.to_s.strip)
           return nil unless uri.is_a?(URI::HTTP) && uri.host && !uri.host.empty?
+          return nil if uri.userinfo || uri.query || uri.fragment
 
+          clean_base = uri.to_s.chomp("/")
           if uri.path.nil? || uri.path.empty? || uri.path == "/"
             mount_path = detect_engine_mount_path
-            "#{raw_base.chomp('/')}#{mount_path}"
+            "#{clean_base}#{mount_path}"
           else
-            raw_base.chomp("/")
+            clean_base
           end
         rescue URI::InvalidURIError
           nil

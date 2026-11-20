@@ -46,6 +46,37 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
     ),
     "/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=[REDACTED]&_myapp_session=[REDACTED]&user_session_token=[REDACTED]&TOKEN_PRESENT=1&access_token=[REDACTED]"
   );
+
+  // Strip OAuth / SPA #hash fragments from both absolute and relative URLs
+  assert.equal(
+    scrubUrl("https://shop.example.com/auth/callback?ok=1#access_token=opaque_oauth_secret&id_token=jwt_secret"),
+    "https://shop.example.com/auth/callback?ok=1"
+  );
+  assert.equal(
+    scrubUrl("/auth/callback?state=xyz#access_token=opaque_oauth_secret"),
+    "/auth/callback?state=xyz"
+  );
+});
+
+test("parseStackFrames scrubs frame URL secrets and resists quadratic backtracking on pathological inputs", () => {
+  const secretFrameStack = [
+    "Error: Script failure",
+    "    at loadWidget (https://app.example.com/embed.js?api_key=leak_me&v=2#access_token=hash_leak:14:9)"
+  ].join("\n");
+  const scrubbedFrames = parseStackFrames(secretFrameStack);
+  assert.equal(scrubbedFrames.length, 1);
+  assert.equal(scrubbedFrames[0].filename, "https://app.example.com/embed.js?api_key=[REDACTED]&v=2");
+  assert.equal(scrubbedFrames[0].lineno, 14);
+  assert.equal(scrubbedFrames[0].colno, 9);
+
+  const adversarialV8 = "at " + "a (".repeat(1500) + "no-frame";
+  const adversarialGecko = " ".repeat(3500) + "a:1:1x";
+  const oversizedLine = "    at fn (https://app.example.com/" + "a".repeat(10000) + ".js:1:1)";
+  const started = Date.now();
+  const parsed = parseStackFrames([adversarialV8, adversarialGecko, oversizedLine].join("\n"));
+  const elapsedMs = Date.now() - started;
+  assert.equal(parsed.length, 0);
+  assert.ok(elapsedMs < 100, `Expected linear stack parse < 100ms, took ${elapsedMs}ms`);
 });
 
 test("parseStackFrames parses V8, Firefox, and Safari stacks into oldest-to-newest Sentry frames", () => {

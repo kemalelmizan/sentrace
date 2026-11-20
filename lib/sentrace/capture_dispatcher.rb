@@ -224,7 +224,8 @@ module Sentrace
             project: project_id,
             envelope_headers: envelope_headers,
             received_at: received_at,
-            config: config
+            config: config,
+            ingestion_source: "in_process"
           )
           true
         end

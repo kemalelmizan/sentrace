@@ -67,8 +67,14 @@ module Sentrace
         bench_config.retention_batch_size = @batch_size
 
         ingest_started = monotonic_now
+        bench_received_at = 42.days.ago.utc
         envelopes.each do |raw|
-          Ingestion::Processor.process_raw_envelope(raw, project: project.id, config: bench_config)
+          Ingestion::Processor.process_raw_envelope(
+            raw,
+            project: project.id,
+            received_at: bench_received_at,
+            config: bench_config
+          )
         end
         ingest_elapsed = [ monotonic_now - ingest_started, 0.000_001 ].max
         event_persist_avg_ms = ((ingest_elapsed / @event_count) * 1_000.0).round(3)

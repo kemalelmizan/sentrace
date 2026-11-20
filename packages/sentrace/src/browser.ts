@@ -1,4 +1,4 @@
-import { getGlobalObject, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
+import { getGlobalObject, isSameOrAllowedOrigin, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
 import { SENTRACE_INTERNAL_FETCH_FLAG } from "./transport.ts";
 import type { Breadcrumb, StackFrame } from "./types.ts";
 
@@ -256,7 +256,12 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
           }
           const status = response && typeof response.status === "number" ? response.status : undefined;
 
-          if (requestId && status !== undefined && status >= 400) {
+          if (
+            requestId &&
+            status !== undefined &&
+            status >= 400 &&
+            isSameOrAllowedOrigin(rawUrl, hooks.endpointUrl, win.location ? win.location.href : undefined)
+          ) {
             hooks.onCorrelatedRequestId(requestId);
           }
 
@@ -354,7 +359,12 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
             }
           }
 
-          if (requestId && status !== undefined && status >= 400) {
+          if (
+            requestId &&
+            status !== undefined &&
+            status >= 400 &&
+            isSameOrAllowedOrigin(meta.url, hooks.endpointUrl, win.location ? win.location.href : undefined)
+          ) {
             hooks.onCorrelatedRequestId(requestId);
           }
 

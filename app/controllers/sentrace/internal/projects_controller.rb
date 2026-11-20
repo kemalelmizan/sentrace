@@ -1,6 +1,8 @@
 module Sentrace
   module Internal
     class ProjectsController < BaseController
+      before_action :require_admin_scope!, only: %i[create update destroy]
+
       def index
         projects = Project.includes(:project_keys).order(:id).map { |project| serialize_project(project) }
         render json: { projects: projects }
@@ -39,8 +41,11 @@ module Sentrace
 
       private
         def serialize_project(project, key_override: nil)
-          active_key = key_override || project.active_key
-          base_url = "#{request.base_url}#{Sentrace::Engine.routes.find_script_name({})}"
+          include_creds = can_view_project_credentials?
+          active_key = include_creds ? (key_override || project.active_key) : nil
+          configured_public_base = Sentrace.configuration.public_base_url.to_s.strip
+          origin_base = configured_public_base.empty? ? request.base_url : configured_public_base.chomp("/")
+          base_url = "#{origin_base}#{Sentrace::Engine.routes.find_script_name({})}"
           dsn =
             if active_key
               begin

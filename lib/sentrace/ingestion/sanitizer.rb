@@ -75,13 +75,19 @@ module Sentrace
 
       MAX_RETAINED_USER_FIELDS = 16
       MAX_USER_FIELD_BYTES = 256
+      MAX_PRE_SCRUB_BYTES = 8192
+      MAX_QUERY_PARAMS = 64
+      URL_VALUE_KEYS = %w[url from to href location endpoint].freeze
 
-      PEM_PRIVATE_KEY_REGEX = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/
+      PEM_HEADER_REGEX = /-----BEGIN [A-Z0-9 ]{0,32}PRIVATE KEY-----/
+      PEM_FOOTER_REGEX = /-----END [A-Z0-9 ]{0,32}PRIVATE KEY-----/
       BEARER_HEADER_REGEX = /\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i
       BASIC_AUTH_HEADER_REGEX = /\bBasic\s+[A-Za-z0-9+\/]{8,}={0,2}/i
       URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@]*:[^/\s@]*(@)}i
+      TRUNCATED_URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@]{1,128}:[^/\s@]{1,256}\z}i
       RAW_JWT_REGEX = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/
-      KNOWN_SECRET_TOKEN_REGEX = /\b(?:snt_mcp_[A-Za-z0-9_-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/
+      TRUNCATED_JWT_REGEX = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]*)?\z/
+      KNOWN_SECRET_TOKEN_REGEX = /\b(?:snt_mcp_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{32,}|ya29\.[0-9A-Za-z_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b/
       PAN_CANDIDATE_REGEX = /\b(?:\d[ -]*?){13,19}\b/
 
       class << self
@@ -91,6 +97,68 @@ module Sentrace
 
         def sanitize_url(raw_url, raw_query_string = nil, config: Sentrace.configuration)
           new(config: config).sanitize_url(raw_url, raw_query_string)
+        end
+
+        def redact_inline_secrets(raw_text)
+          return raw_text unless raw_text.is_a?(String) && !raw_text.empty?
+
+          cleaned = scrub_pem_blocks(raw_text)
+          cleaned = cleaned
+            .gsub(BEARER_HEADER_REGEX, "Bearer #{REDACTED}")
+            .gsub(BASIC_AUTH_HEADER_REGEX, "Basic #{REDACTED}")
+            .gsub(URI_USERINFO_REGEX, "\\1#{REDACTED}\\2")
+            .gsub(TRUNCATED_URI_USERINFO_REGEX, "\\1#{REDACTED}")
+            .gsub(RAW_JWT_REGEX, REDACTED)
+            .gsub(TRUNCATED_JWT_REGEX, REDACTED)
+            .gsub(KNOWN_SECRET_TOKEN_REGEX, REDACTED)
+
+          cleaned.gsub(PAN_CANDIDATE_REGEX) do |match|
+            digits = match.gsub(/\D/, "")
+            luhn_valid?(digits) ? REDACTED : match
+          end
+        end
+
+        def scrub_pem_blocks(text)
+          return text unless text.include?("PRIVATE KEY-----")
+
+          out = +""
+          pos = 0
+          len = text.length
+
+          while pos < len
+            header_match = PEM_HEADER_REGEX.match(text, pos)
+            break unless header_match
+
+            out << text[pos...header_match.begin(0)]
+            footer_match = PEM_FOOTER_REGEX.match(text, header_match.end(0))
+            if footer_match
+              out << REDACTED
+              pos = footer_match.end(0)
+            else
+              out << REDACTED
+              pos = len
+              break
+            end
+          end
+
+          out << text[pos...len] if pos < len
+          out
+        end
+
+        def luhn_valid?(digits)
+          return false unless digits.length.between?(13, 19)
+          return false if digits.chars.uniq.one?
+
+          sum = 0
+          digits.reverse.chars.each_with_index do |ch, idx|
+            n = ch.to_i
+            if idx.odd?
+              n *= 2
+              n -= 9 if n > 9
+            end
+            sum += n
+          end
+          (sum % 10).zero?
         end
 
         def ephemeral_fallback_secret
@@ -119,6 +187,7 @@ module Sentrace
 
       def sanitize(normalized_event, project_id:)
         base_data = deep_dup(normalized_event.event_data)
+        original_ingestion_source = base_data["ingestion_source"]
 
         base_data["request"] = sanitize_request(normalized_event.raw_request)
         base_data["user"] = sanitize_user(normalized_event.raw_user, project_id: project_id)
@@ -127,9 +196,15 @@ module Sentrace
         base_data["contexts"] = scrub_contexts(base_data["contexts"] || {})
         base_data["message"] = scrub_text(base_data["message"]) if base_data["message"]
 
+        sanitized_exception_type = normalized_event.exception_type ? scrub_single_line(normalized_event.exception_type, 255) : nil
         if base_data["exception"].is_a?(Hash)
           exc = base_data["exception"].dup
+          exc["type"] = scrub_single_line(exc["type"], 255) if exc["type"]
           exc["value"] = scrub_text(exc["value"]) if exc["value"]
+          if exc["frames"].is_a?(Array)
+            exc["frames"] = scrub_frames(exc["frames"])
+          end
+          sanitized_exception_type ||= exc["type"]
           base_data["exception"] = exc
         end
 
@@ -141,10 +216,22 @@ module Sentrace
           base_data = enforce_post_sanitizer_bounds(custom_result)
         end
 
+        if original_ingestion_source
+          base_data["ingestion_source"] = original_ingestion_source
+        else
+          base_data.delete("ingestion_source")
+        end
+
         issue_summary_source = base_data.dig("exception", "value") || base_data["message"]
-        sanitized_issue_message = issue_summary_source ? issue_summary_source.to_s[0, 1024] : nil
+        sanitized_issue_message = issue_summary_source ? EventNormalizer.strip_unsafe_characters(issue_summary_source, allow_newlines: true).to_s[0, 1024] : nil
 
         normalized_event.with(
+          environment: scrub_single_line(normalized_event.environment, 64),
+          release: scrub_single_line(normalized_event.release, 128),
+          platform: scrub_single_line(normalized_event.platform, 32),
+          logger: scrub_single_line(normalized_event.logger, 128),
+          culprit: scrub_single_line(normalized_event.culprit, 512),
+          exception_type: sanitized_exception_type,
           issue_message: sanitized_issue_message,
           event_data: base_data,
           raw_user: nil,
@@ -155,19 +242,36 @@ module Sentrace
       def sanitize_url(raw_url, raw_query_string = nil)
         return nil if raw_url.nil? || raw_url.to_s.strip.empty?
 
-        uri = URI.parse(raw_url.to_s.strip)
+        bounded_url = EventNormalizer.strip_unsafe_characters(
+          EventNormalizer.truncate_utf8_bytes(raw_url, MAX_PRE_SCRUB_BYTES),
+          allow_newlines: false
+        ).to_s
+        return nil if bounded_url.empty?
+
+        bounded_query =
+          if raw_query_string.is_a?(String) && !raw_query_string.empty?
+            EventNormalizer.strip_unsafe_characters(
+              EventNormalizer.truncate_utf8_bytes(raw_query_string, MAX_PRE_SCRUB_BYTES),
+              allow_newlines: false
+            )
+          end
+
+        uri = URI.parse(bounded_url)
         uri.user = nil
         uri.password = nil
         uri.fragment = nil if uri.respond_to?(:fragment=)
 
-        combined_query = [ uri.query, raw_query_string.is_a?(String) ? raw_query_string : nil ]
+        combined_query = [ uri.query, bounded_query ]
           .compact
           .reject(&:empty?)
           .join("&")
 
         if !combined_query.empty?
-          scrubbed_pairs = URI.decode_www_form(combined_query).map do |k, v|
-            [ k, sensitive_key?(k) ? REDACTED : scrub_text(v) ]
+          decoded_pairs = URI.decode_www_form(combined_query).first(MAX_QUERY_PARAMS)
+          scrubbed_pairs = decoded_pairs.map do |k, v|
+            bounded_k = EventNormalizer.truncate_utf8_bytes(k.to_s, 128).to_s
+            bounded_v = EventNormalizer.truncate_utf8_bytes(v.to_s, 1024).to_s
+            [ bounded_k, sensitive_key?(bounded_k) ? REDACTED : scrub_text(bounded_v) ]
           end
           uri.query = URI.encode_www_form(scrubbed_pairs)
         else
@@ -176,9 +280,9 @@ module Sentrace
 
         EventNormalizer.truncate_utf8_bytes(uri.to_s, 1024)
       rescue URI::InvalidURIError, ArgumentError
-        # Strip query string and credentials if URL could not be cleanly parsed
-        fallback = raw_url.to_s.split("?").first.to_s.sub(%r{//[^/@]+@}, "//")
-        EventNormalizer.truncate_utf8_bytes(fallback, 1024)
+        # Strip query string, fragment, and credentials if URL could not be cleanly parsed
+        fallback = bounded_url.to_s.split(/[?#]/).first.to_s.sub(%r{//[^/@]+@}, "//")
+        EventNormalizer.truncate_utf8_bytes(scrub_text(fallback), 1024)
       end
 
       private
@@ -206,8 +310,9 @@ module Sentrace
 
           result = {}
           if !raw_id.nil? && !raw_id.to_s.strip.empty?
+            bounded_id = EventNormalizer.truncate_utf8_bytes(raw_id.to_s, 1024).to_s
             key_material = "#{effective_secret_base}:sentrace:project:#{project_id}"
-            result["id_hash"] = OpenSSL::HMAC.hexdigest("SHA256", key_material, raw_id.to_s)
+            result["id_hash"] = OpenSSL::HMAC.hexdigest("SHA256", key_material, bounded_id)
           end
 
           @retain_user_fields.each do |field_name|
@@ -240,7 +345,9 @@ module Sentrace
         def sanitize_user_scalar(raw_val)
           case raw_val
           when String
-            EventNormalizer.truncate_utf8_bytes(scrub_text(raw_val), MAX_USER_FIELD_BYTES)
+            bounded = EventNormalizer.truncate_utf8_bytes(raw_val, MAX_PRE_SCRUB_BYTES)
+            cleaned = EventNormalizer.strip_unsafe_characters(bounded, allow_newlines: false)
+            EventNormalizer.truncate_utf8_bytes(scrub_text(cleaned), MAX_USER_FIELD_BYTES)
           when Numeric
             raw_val.to_s.bytesize <= MAX_USER_FIELD_BYTES ? raw_val : EventNormalizer.truncate_utf8_bytes(raw_val.to_s, MAX_USER_FIELD_BYTES)
           when TrueClass, FalseClass
@@ -275,6 +382,25 @@ module Sentrace
           end
         end
 
+        def scrub_frames(frames)
+          frames.map do |frame|
+            next unless frame.is_a?(Hash)
+
+            cleaned = frame.dup
+            if cleaned["filename"].is_a?(String)
+              raw_fn = cleaned["filename"]
+              cleaned["filename"] =
+                if raw_fn.match?(%r{\Ahttps?://}i) || raw_fn.include?("?") || raw_fn.include?("#")
+                  sanitize_url(raw_fn) || scrub_single_line(raw_fn, 512)
+                else
+                  scrub_single_line(raw_fn, 512)
+                end
+            end
+            cleaned["function"] = scrub_single_line(cleaned["function"], 255) if cleaned["function"].is_a?(String)
+            cleaned.compact
+          end.compact
+        end
+
         def scrub_breadcrumbs(crumbs)
           return [] unless crumbs.is_a?(Array)
 
@@ -282,11 +408,15 @@ module Sentrace
             next unless crumb.is_a?(Hash)
 
             cleaned = crumb.dup
+            cleaned["timestamp"] = scrub_single_line(cleaned["timestamp"], 64) if cleaned["timestamp"].is_a?(String)
+            cleaned["type"] = scrub_single_line(cleaned["type"], 64) if cleaned["type"].is_a?(String)
+            cleaned["category"] = scrub_single_line(cleaned["category"], 128) if cleaned["category"].is_a?(String)
+            cleaned["level"] = scrub_single_line(cleaned["level"], 32) if cleaned["level"].is_a?(String)
             cleaned["message"] = scrub_text(cleaned["message"]) if cleaned["message"]
             if cleaned["data"].is_a?(Hash)
               cleaned["data"] = scrub_hash(cleaned["data"])
             end
-            cleaned
+            cleaned.compact
           end.compact
         end
 
@@ -298,9 +428,19 @@ module Sentrace
               next
             elsif sensitive_key?(key_str)
               acc[key_str] = REDACTED
+            elsif URL_VALUE_KEYS.include?(downcased) && v.is_a?(String)
+              acc[key_str] = sanitize_url_or_text(v)
             else
               acc[key_str] = scrub_value(v)
             end
+          end
+        end
+
+        def sanitize_url_or_text(val)
+          if val.match?(%r{\A[a-z][a-z0-9+.-]*://}i) || val.start_with?("/") || val.include?("?") || val.include?("#")
+            sanitize_url(val) || scrub_text(val)
+          else
+            scrub_text(val)
           end
         end
 
@@ -330,50 +470,41 @@ module Sentrace
           AUTH_SESSION_EXACT_KEYS.include?(downcased) || AUTH_SESSION_KEY_REGEX.match?(downcased)
         end
 
+        def scrub_single_line(text, max_chars)
+          return nil if text.nil?
+
+          cleaned = EventNormalizer.strip_unsafe_characters(
+            EventNormalizer.truncate_utf8_bytes(text.to_s, MAX_PRE_SCRUB_BYTES),
+            allow_newlines: false
+          ).to_s.strip
+          return nil if cleaned.empty?
+
+          redacted = self.class.redact_inline_secrets(cleaned)
+          redacted.length > max_chars ? redacted[0, max_chars] : redacted
+        end
+
         def scrub_text(text)
           return text unless text.is_a?(String)
 
-          cleaned = text
-            .gsub(PEM_PRIVATE_KEY_REGEX, REDACTED)
-            .gsub(BEARER_HEADER_REGEX, "Bearer #{REDACTED}")
-            .gsub(BASIC_AUTH_HEADER_REGEX, "Basic #{REDACTED}")
-            .gsub(URI_USERINFO_REGEX, "\\1#{REDACTED}\\2")
-            .gsub(RAW_JWT_REGEX, REDACTED)
-            .gsub(KNOWN_SECRET_TOKEN_REGEX, REDACTED)
-
-          cleaned.gsub(PAN_CANDIDATE_REGEX) do |match|
-            digits = match.gsub(/\D/, "")
-            luhn_valid?(digits) ? REDACTED : match
-          end
-        end
-
-        def luhn_valid?(digits)
-          return false unless digits.length.between?(13, 19)
-          return false if digits.chars.uniq.one?
-
-          sum = 0
-          digits.reverse.chars.each_with_index do |ch, idx|
-            n = ch.to_i
-            if idx.odd?
-              n *= 2
-              n -= 9 if n > 9
-            end
-            sum += n
-          end
-          (sum % 10).zero?
+          bounded = EventNormalizer.truncate_utf8_bytes(text, [ @config.max_message_bytes.to_i, MAX_PRE_SCRUB_BYTES ].max)
+          cleaned = EventNormalizer.strip_unsafe_characters(bounded, allow_newlines: true)
+          self.class.redact_inline_secrets(cleaned)
         end
 
         def enforce_post_sanitizer_bounds(data)
           bounded = data.dup
           if bounded["message"].is_a?(String)
-            bounded["message"] = EventNormalizer.truncate_utf8_bytes(bounded["message"], @config.max_message_bytes)
+            cleaned_msg = EventNormalizer.strip_unsafe_characters(bounded["message"], allow_newlines: true)
+            bounded["message"] = EventNormalizer.truncate_utf8_bytes(cleaned_msg, @config.max_message_bytes)
           end
 
           if bounded["tags"].is_a?(Hash)
             bounded["tags"] = bounded["tags"].first(@config.max_tags).to_h do |k, v|
+              clean_k = EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false)
+              clean_v = v.nil? ? nil : EventNormalizer.strip_unsafe_characters(v.to_s, allow_newlines: false)
               [
-                EventNormalizer.truncate_utf8_bytes(k.to_s, @config.max_tag_key_bytes),
-                v.nil? ? nil : EventNormalizer.truncate_utf8_bytes(v.to_s, @config.max_tag_value_bytes)
+                EventNormalizer.truncate_utf8_bytes(clean_k, @config.max_tag_key_bytes),
+                clean_v.nil? ? nil : EventNormalizer.truncate_utf8_bytes(clean_v, @config.max_tag_value_bytes)
               ]
             end
           end
@@ -387,7 +518,10 @@ module Sentrace
             bounded["user"].each do |k, v|
               break if bounded_user.size >= (MAX_RETAINED_USER_FIELDS + 1)
 
-              key_str = EventNormalizer.truncate_utf8_bytes(k.to_s, 64)
+              key_str = EventNormalizer.truncate_utf8_bytes(
+                EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false),
+                64
+              )
               next if key_str.nil? || key_str.empty?
 
               if key_str == "id_hash"
@@ -402,11 +536,15 @@ module Sentrace
 
           if bounded["exception"].is_a?(Hash)
             exc = bounded["exception"].dup
+            if exc["type"].is_a?(String)
+              exc["type"] = scrub_single_line(exc["type"], 255)
+            end
             if exc["value"].is_a?(String)
-              exc["value"] = EventNormalizer.truncate_utf8_bytes(exc["value"], @config.max_message_bytes)
+              clean_val = EventNormalizer.strip_unsafe_characters(exc["value"], allow_newlines: true)
+              exc["value"] = EventNormalizer.truncate_utf8_bytes(clean_val, @config.max_message_bytes)
             end
             if exc["frames"].is_a?(Array)
-              exc["frames"] = exc["frames"].last(@config.max_stack_frames)
+              exc["frames"] = scrub_frames(exc["frames"].last(@config.max_stack_frames))
             end
             bounded["exception"] = exc
           end
@@ -416,7 +554,10 @@ module Sentrace
             bounded["contexts"].each do |k, v|
               break if kept.size >= @config.max_context_entries
 
-              key_str = EventNormalizer.truncate_utf8_bytes(k.to_s, 64)
+              key_str = EventNormalizer.truncate_utf8_bytes(
+                EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false),
+                64
+              )
               next if key_str.nil? || key_str.empty?
               next if FORBIDDEN_CONTEXT_KEYS.include?(key_str.strip.downcase)
               next unless v.is_a?(Hash)
@@ -436,14 +577,16 @@ module Sentrace
           case value
           when Hash
             value.first(16).to_h do |k, v|
-              [ EventNormalizer.truncate_utf8_bytes(k.to_s, 64), bound_post_sanitizer_value(v, depth: depth + 1) ]
+              clean_k = EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false)
+              [ EventNormalizer.truncate_utf8_bytes(clean_k, 64), bound_post_sanitizer_value(v, depth: depth + 1) ]
             end
           when Array
             value.first(16).map { |v| bound_post_sanitizer_value(v, depth: depth + 1) }
           when Numeric, TrueClass, FalseClass, NilClass
             value
           else
-            EventNormalizer.truncate_utf8_bytes(value.to_s, 512)
+            clean_str = EventNormalizer.strip_unsafe_characters(value.to_s, allow_newlines: true)
+            EventNormalizer.truncate_utf8_bytes(clean_str, 512)
           end
         end
 

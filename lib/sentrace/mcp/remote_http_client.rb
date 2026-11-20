@@ -23,8 +23,42 @@ module Sentrace
       REQUEST_ACCEPT = "application/json, text/event-stream".freeze
       MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024
       MAX_JSON_NESTING = 64
+      ALLOWED_TOP_LEVEL_KEYS = %w[
+        environment
+        remote_deployment_environment
+        untrusted_telemetry_notice
+        projects
+        issues
+        events
+        issue
+        event
+        interval
+        since
+        until
+        total_events
+        buckets
+        next_cursor
+      ].freeze
+      ALLOWED_PROJECT_KEYS = %w[id slug name environment created_at].freeze
+      ALLOWED_ISSUE_SUMMARY_KEYS = %w[
+        id project_id environment fingerprint status level
+        exception_type message first_seen_at last_seen_at event_count
+      ].freeze
+      ALLOWED_ISSUE_DETAIL_KEYS = (ALLOWED_ISSUE_SUMMARY_KEYS + %w[
+        release_distribution environment_distribution recent_events
+      ]).freeze
+      ALLOWED_EVENT_SUMMARY_KEYS = %w[
+        id event_id project_id issue_id environment event_environment
+        release platform request_id ingestion_source level logger culprit
+        exception_type message occurred_at received_at
+      ].freeze
+      ALLOWED_EVENT_DETAIL_KEYS = (ALLOWED_EVENT_SUMMARY_KEYS + %w[
+        exception raw_message request breadcrumbs tags contexts user
+      ]).freeze
+      ALLOWED_BUCKET_KEYS = %w[bucket_start count].freeze
 
       def initialize(http_requester: nil)
+        @custom_requester = !http_requester.nil?
         @http_requester = http_requester || method(:perform_net_http_post)
       end
 
@@ -89,8 +123,23 @@ module Sentrace
           effective_timeout = timeout || env_def.timeout
 
           run_with_deadline(effective_timeout) do
-            @http_requester.call(uri: uri, headers: headers, body: body, timeout: effective_timeout)
+            if @custom_requester
+              @http_requester.call(uri: uri, headers: headers, body: body, timeout: effective_timeout)
+            else
+              perform_net_http_post(
+                uri: uri,
+                headers: headers,
+                body: body,
+                timeout: effective_timeout,
+                env_name: env_def.name
+              )
+            end
           end
+        rescue McpRemoteError => e
+          if e.environment.to_s.empty?
+            raise McpRemoteError.new(e.message, environment: env_def.name, category: e.category)
+          end
+          raise
         rescue McpError
           raise
         rescue Timeout::Error
@@ -302,37 +351,83 @@ module Sentrace
         end
 
         def normalize_environment_attribution(payload, target_env)
-          remote_env = payload["environment"].to_s.strip
-          normalized = payload.merge("environment" => target_env)
+          remote_env = RequestSecurity.sanitize_single_line(payload["environment"], max_chars: 64).to_s
+          normalized = payload.slice(*ALLOWED_TOP_LEVEL_KEYS).merge("environment" => target_env)
           if !remote_env.empty? && remote_env != target_env
             normalized["remote_deployment_environment"] = remote_env
           end
 
-          %w[projects issues events].each do |collection_key|
-            next unless normalized[collection_key].is_a?(Array)
-
-            normalized[collection_key] = normalized[collection_key].map do |item|
-              item.is_a?(Hash) ? item.merge("environment" => target_env) : item
+          if normalized["projects"].is_a?(Array)
+            normalized["projects"] = normalized["projects"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
+              next unless item.is_a?(Hash)
+              sanitize_remote_hash(item.slice(*ALLOWED_PROJECT_KEYS)).merge("environment" => target_env)
             end
           end
 
-          %w[issue event].each do |record_key|
-            next unless normalized[record_key].is_a?(Hash)
+          if normalized["issues"].is_a?(Array)
+            normalized["issues"] = normalized["issues"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
+              next unless item.is_a?(Hash)
+              sanitize_remote_hash(item.slice(*ALLOWED_ISSUE_SUMMARY_KEYS)).merge("environment" => target_env)
+            end
+          end
 
-            normalized[record_key] = normalized[record_key].merge("environment" => target_env)
+          if normalized["events"].is_a?(Array)
+            normalized["events"] = normalized["events"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
+              next unless item.is_a?(Hash)
+              sanitize_remote_hash(item.slice(*ALLOWED_EVENT_SUMMARY_KEYS)).merge("environment" => target_env)
+            end
+          end
+
+          if normalized["buckets"].is_a?(Array)
+            normalized["buckets"] = normalized["buckets"].first(LocalBackend::MAX_TREND_BUCKETS).filter_map do |item|
+              next unless item.is_a?(Hash)
+              sanitize_remote_hash(item.slice(*ALLOWED_BUCKET_KEYS))
+            end
+          end
+
+          if normalized["issue"].is_a?(Hash)
+            normalized["issue"] = sanitize_remote_hash(normalized["issue"].slice(*ALLOWED_ISSUE_DETAIL_KEYS))
+              .merge("environment" => target_env)
+          end
+
+          if normalized["event"].is_a?(Hash)
+            normalized["event"] = sanitize_remote_hash(normalized["event"].slice(*ALLOWED_EVENT_DETAIL_KEYS))
+              .merge("environment" => target_env)
           end
 
           normalized
         end
 
+        def sanitize_remote_hash(value, depth: 0)
+          return "[TRUNCATED]" if depth > 6
+
+          case value
+          when Hash
+            value.first(64).to_h do |k, v|
+              clean_k = Ingestion::EventNormalizer.truncate_utf8_bytes(
+                Ingestion::EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false),
+                128
+              )
+              [ clean_k, sanitize_remote_hash(v, depth: depth + 1) ]
+            end
+          when Array
+            value.first(100).map { |item| sanitize_remote_hash(item, depth: depth + 1) }
+          when String
+            cleaned = Ingestion::EventNormalizer.strip_unsafe_characters(value, allow_newlines: true)
+            Ingestion::EventNormalizer.truncate_utf8_bytes(cleaned, 8192)
+          else
+            value
+          end
+        end
+
         def scrub_secret(message, env_def)
-          text = message.to_s.dup
+          text = RequestSecurity.sanitize_single_line(message, max_chars: 512).to_s
           secret = env_def.token.to_s
           text.gsub!(secret, "[REDACTED]") unless secret.empty?
           text
         end
 
-        def perform_net_http_post(uri:, headers:, body:, timeout:)
+        def perform_net_http_post(uri:, headers:, body:, timeout:, env_name: nil)
           require "net/http"
           target_host = uri.respond_to?(:hostname) && uri.hostname ? uri.hostname : uri.host
           http = Net::HTTP.new(target_host, uri.port)
@@ -363,7 +458,7 @@ module Sentrace
                 if body_buffer.bytesize > MAX_REMOTE_RESPONSE_BYTES
                   raise McpRemoteError.new(
                     "Remote MCP response exceeded #{MAX_REMOTE_RESPONSE_BYTES} bytes",
-                    environment: target_host,
+                    environment: env_name,
                     category: "protocol_error"
                   )
                 end

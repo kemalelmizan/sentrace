@@ -26,7 +26,8 @@ module Sentrace
             end
           expires_at = token.expires_at&.utc&.iso8601 || "(never)"
           last_used = token.last_used_at&.utc&.iso8601 || "(never)"
-          @io.puts format("%-6s %-24s %-16s %-10s %-12s %-22s %s", token.id, token.name, token.token_prefix, status, token.scopes, expires_at, last_used)
+          safe_name = RequestSecurity.sanitize_single_line(token.name, max_chars: 120)
+          @io.puts format("%-6s %-24s %-16s %-10s %-12s %-22s %s", token.id, safe_name, token.token_prefix, status, token.scopes, expires_at, last_used)
         end
         tokens
       end

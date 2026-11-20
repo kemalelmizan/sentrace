@@ -1,18 +1,8 @@
+import { scrubUrl } from "./dsn.ts";
 import type { SentryExceptionValue, StackFrame } from "./types.ts";
 
-// V8 / Chromium / Edge / Node:
-//   at fnName (https://app.example.com/assets/app.js:12:34)
-//   at async Object.submit [as click] (https://app.example.com/assets/app.js:12:34)
-//   at https://app.example.com/assets/app.js:12:34
-const V8_FRAME_WITH_PARENS =
-  /^\s*at\s+(?:async\s+)?(?:new\s+)?(.+?)\s+\((?:eval at [^\s]+\s+\()?(.+?):(\d+):(\d+)\)?\)\s*$/;
-const V8_BARE_FRAME = /^\s*at\s+(?:async\s+)?(.+?):(\d+):(\d+)\s*$/;
-
-// Firefox / SpiderMonkey & Safari / JavaScriptCore:
-//   submitOrder@https://app.example.com/assets/app.js:12:34
-//   @https://app.example.com/assets/app.js:12:34
-//   global code@https://app.example.com/assets/app.js:1:10
-const GECKO_WEBKIT_FRAME = /^\s*(?:([^@]*)@)?(.+?):(\d+):(\d+)\s*$/;
+const MAX_STACK_LINE_CHARS = 4096;
+const MAX_STACK_LINES_SCANNED = 250;
 
 const NON_APP_URL_PATTERNS = [
   "/node_modules/",
@@ -55,50 +45,115 @@ function cleanFunctionName(raw: string | undefined): string {
   return cleaned;
 }
 
+function extractLineColSuffix(text: string): { file: string; lineno: number; colno: number } | null {
+  const colSep = text.lastIndexOf(":");
+  if (colSep <= 0) {
+    return null;
+  }
+  const lineSep = text.lastIndexOf(":", colSep - 1);
+  if (lineSep <= 0) {
+    return null;
+  }
+  const colStr = text.slice(colSep + 1);
+  const lineStr = text.slice(lineSep + 1, colSep);
+  if (!/^\d+$/.test(lineStr) || !/^\d+$/.test(colStr)) {
+    return null;
+  }
+  const file = text.slice(0, lineSep).trim();
+  if (!file) {
+    return null;
+  }
+  return {
+    file,
+    lineno: Number.parseInt(lineStr, 10),
+    colno: Number.parseInt(colStr, 10)
+  };
+}
+
+function sanitizeFrameFilename(rawFilename: string): string {
+  if (
+    /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(rawFilename) ||
+    rawFilename.indexOf("?") !== -1 ||
+    rawFilename.indexOf("#") !== -1
+  ) {
+    const scrubbed = scrubUrl(rawFilename);
+    return scrubbed || rawFilename;
+  }
+  return rawFilename;
+}
+
 export function parseStackLine(line: string): StackFrame | null {
+  if (!line || line.length > MAX_STACK_LINE_CHARS) {
+    return null;
+  }
   const trimmed = line.trim();
-  if (!trimmed || trimmed.includes("[native code]")) {
+  if (!trimmed || trimmed.length > MAX_STACK_LINE_CHARS || trimmed.includes("[native code]")) {
     return null;
   }
 
-  let match = V8_FRAME_WITH_PARENS.exec(trimmed);
-  if (match) {
-    const filename = match[2]!.trim();
-    return {
-      filename,
-      function: cleanFunctionName(match[1]),
-      lineno: Number.parseInt(match[3]!, 10),
-      colno: Number.parseInt(match[4]!, 10),
-      in_app: isInAppFilename(filename)
-    };
-  }
+  if (trimmed.startsWith("at ")) {
+    let rest = trimmed.slice(3).trim();
+    if (rest.startsWith("async ")) {
+      rest = rest.slice(6).trim();
+    }
 
-  match = V8_BARE_FRAME.exec(trimmed);
-  if (match) {
-    const filename = match[1]!.trim();
-    return {
-      filename,
-      function: "?",
-      lineno: Number.parseInt(match[2]!, 10),
-      colno: Number.parseInt(match[3]!, 10),
-      in_app: isInAppFilename(filename)
-    };
-  }
-
-  if (!trimmed.startsWith("at ")) {
-    match = GECKO_WEBKIT_FRAME.exec(trimmed);
-    if (match) {
-      const filename = match[2]!.trim();
-      if (filename.includes("/") || filename.includes(".") || filename.startsWith("http")) {
+    if (rest.endsWith(")") && rest.indexOf(" (") !== -1) {
+      const openParen = rest.indexOf(" (");
+      let fnRaw = rest.slice(0, openParen).trim();
+      if (fnRaw.startsWith("new ")) {
+        fnRaw = fnRaw.slice(4).trim();
+      }
+      let locPart = rest.slice(openParen + 2, rest.length - 1).trim();
+      if (locPart.startsWith("eval at ")) {
+        const innerOpen = locPart.indexOf(" (");
+        if (innerOpen !== -1 && locPart.endsWith(")")) {
+          locPart = locPart.slice(innerOpen + 2, locPart.length - 1).trim();
+        }
+      }
+      const parsedParen = extractLineColSuffix(locPart);
+      if (parsedParen) {
+        const cleanFile = sanitizeFrameFilename(parsedParen.file);
         return {
-          filename,
-          function: cleanFunctionName(match[1]),
-          lineno: Number.parseInt(match[3]!, 10),
-          colno: Number.parseInt(match[4]!, 10),
-          in_app: isInAppFilename(filename)
+          filename: cleanFile,
+          function: cleanFunctionName(fnRaw),
+          lineno: parsedParen.lineno,
+          colno: parsedParen.colno,
+          in_app: isInAppFilename(cleanFile)
         };
       }
     }
+
+    const parsedBare = extractLineColSuffix(rest);
+    if (parsedBare) {
+      const cleanBareFile = sanitizeFrameFilename(parsedBare.file);
+      return {
+        filename: cleanBareFile,
+        function: "?",
+        lineno: parsedBare.lineno,
+        colno: parsedBare.colno,
+        in_app: isInAppFilename(cleanBareFile)
+      };
+    }
+
+    return null;
+  }
+
+  const atIdx = trimmed.indexOf("@");
+  const fnPart = atIdx !== -1 ? trimmed.slice(0, atIdx) : undefined;
+  const locPart = atIdx !== -1 ? trimmed.slice(atIdx + 1).trim() : trimmed;
+  const parsedGecko = extractLineColSuffix(locPart);
+  if (
+    parsedGecko &&
+    (parsedGecko.file.includes("/") || parsedGecko.file.includes(".") || parsedGecko.file.startsWith("http"))
+  ) {
+    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file);
+    return {
+      filename: cleanGeckoFile,
+      function: cleanFunctionName(fnPart),
+      lineno: parsedGecko.lineno,
+      colno: parsedGecko.colno,
+      in_app: isInAppFilename(cleanGeckoFile)
+    };
   }
 
   return null;
@@ -114,8 +169,10 @@ export function parseStackFrames(stack: string | undefined, maxFrames = 50): Sta
   }
 
   const newestFirst: StackFrame[] = [];
-  for (const line of stack.split(/\r?\n/)) {
-    const frame = parseStackLine(line);
+  const rawLines = stack.split(/\r?\n/);
+  const scanLimit = Math.min(rawLines.length, MAX_STACK_LINES_SCANNED);
+  for (let i = 0; i < scanLimit; i += 1) {
+    const frame = parseStackLine(rawLines[i]!);
     if (frame) {
       newestFirst.push(frame);
     }

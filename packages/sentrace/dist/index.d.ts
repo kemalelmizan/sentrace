@@ -308,6 +308,11 @@ export declare function registerStimulusErrorHandler(application: StimulusApplic
 export declare function parseDsn(rawDsn: string | null | undefined): ParsedDsn | null;
 export declare function formatPublicDsn(dsn: ParsedDsn): string;
 export declare function buildEnvelopeEndpoint(dsn: ParsedDsn): string;
+export declare function isSameOrAllowedOrigin(
+  rawUrl: string | undefined,
+  endpointUrl: string | null,
+  pageHref: string | undefined
+): boolean;
 export declare function scrubUrl(
   rawUrl: string | undefined,
   extraRedactFields?: string[],
@@ -363,6 +368,7 @@ declare const Sentrace: {
   parseDsn: typeof parseDsn;
   formatPublicDsn: typeof formatPublicDsn;
   buildEnvelopeEndpoint: typeof buildEnvelopeEndpoint;
+  isSameOrAllowedOrigin: typeof isSameOrAllowedOrigin;
   scrubUrl: typeof scrubUrl;
   generateEventId: typeof generateEventId;
   serializeEnvelope: typeof serializeEnvelope;

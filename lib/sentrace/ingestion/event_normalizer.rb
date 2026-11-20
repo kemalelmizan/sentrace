@@ -24,9 +24,15 @@ module Sentrace
 
       EVENT_ID_HEX = /\A[0-9a-f]{32}\z/
       SAFE_REQUEST_ID_REGEX = /\A[A-Za-z0-9._:-]{1,128}\z/
+      ALLOWED_INGESTION_SOURCES = %w[in_process http_dsn].freeze
       ISSUE_MESSAGE_MAX_CHARS = 1024
       MAX_FINGERPRINT_ITEMS = 32
       MAX_FINGERPRINT_PART_BYTES = 256
+      PRE_SANITIZE_MAX_BYTES = 8192
+      ANSI_ESCAPE_REGEX = /\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/
+      UNSAFE_UNICODE_REGEX = /[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\u061C\uFEFF\u{E0000}-\u{E007F}]/
+      DISALLOWED_MULTILINE_CONTROLS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u0080-\u009F]/
+      DISALLOWED_SINGLELINE_CONTROLS_REGEX = /[\x00-\x1F\x7F\u0080-\u009F]/
 
       LEVEL_MAP = {
         "debug" => :debug,
@@ -38,8 +44,35 @@ module Sentrace
       }.freeze
 
       class << self
-        def normalize(raw_event, envelope_headers: {}, received_at: Time.current, config: Sentrace.configuration)
-          new(config: config).normalize(raw_event, envelope_headers: envelope_headers, received_at: received_at)
+        def normalize(
+          raw_event,
+          envelope_headers: {},
+          received_at: Time.current,
+          config: Sentrace.configuration,
+          ingestion_source: "in_process"
+        )
+          new(config: config).normalize(
+            raw_event,
+            envelope_headers: envelope_headers,
+            received_at: received_at,
+            ingestion_source: ingestion_source
+          )
+        end
+
+        def strip_unsafe_characters(value, allow_newlines: false)
+          return nil if value.nil?
+
+          str = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub
+          str.gsub!(ANSI_ESCAPE_REGEX, "")
+          str.gsub!(UNSAFE_UNICODE_REGEX, "")
+          if allow_newlines
+            str.gsub!("\r\n", "\n")
+            str.tr!("\r", "\n")
+            str.gsub!(DISALLOWED_MULTILINE_CONTROLS_REGEX, "")
+          else
+            str.gsub!(DISALLOWED_SINGLELINE_CONTROLS_REGEX, " ")
+          end
+          str
         end
 
         def truncate_utf8_bytes(value, max_bytes)
@@ -54,17 +87,28 @@ module Sentrace
           end
           sliced
         end
+
+        def scrub_and_truncate_bytes(value, max_bytes, allow_newlines: true)
+          return nil if value.nil?
+
+          pre_limit = [ max_bytes.to_i, PRE_SANITIZE_MAX_BYTES ].max
+          bounded = truncate_utf8_bytes(value, pre_limit)
+          cleaned = strip_unsafe_characters(bounded, allow_newlines: allow_newlines)
+          redacted = Sanitizer.redact_inline_secrets(cleaned)
+          truncate_utf8_bytes(redacted, max_bytes)
+        end
       end
 
       def initialize(config: Sentrace.configuration)
         @config = config
       end
 
-      def normalize(raw_event, envelope_headers: {}, received_at: Time.current)
+      def normalize(raw_event, envelope_headers: {}, received_at: Time.current, ingestion_source: "in_process")
         unless raw_event.is_a?(Hash)
           raise EnvelopeParseError, "Event payload must be a JSON object"
         end
 
+        validated_source = ALLOWED_INGESTION_SOURCES.include?(ingestion_source.to_s) ? ingestion_source.to_s : "in_process"
         event_id = extract_event_id(raw_event, envelope_headers)
         occurred_at = extract_timestamp(raw_event["timestamp"], fallback: received_at)
         level = normalize_level(raw_event["level"])
@@ -74,12 +118,13 @@ module Sentrace
         culprit = truncate_chars(raw_event["culprit"] || raw_event["transaction"] || derive_culprit(exception_data), 512)
 
         summary_source = exception_data ? exception_data["value"] : message
-        issue_message = truncate_chars(summary_source, ISSUE_MESSAGE_MAX_CHARS)
+        issue_message = truncate_multiline_chars(summary_source, ISSUE_MESSAGE_MAX_CHARS)
 
         raw_request_hash = raw_event["request"].is_a?(Hash) ? raw_event["request"] : nil
         tags = extract_tags(raw_event["tags"], raw_request: raw_request_hash)
 
         event_data = {
+          "ingestion_source" => validated_source,
           "exception" => exception_data,
           "message" => message,
           "request" => nil,
@@ -120,20 +165,30 @@ module Sentrace
         end
 
         def extract_timestamp(raw_timestamp, fallback:)
-          return fallback if raw_timestamp.nil? || raw_timestamp.to_s.strip.empty?
+          fallback_utc = fallback.utc
+          return fallback_utc if raw_timestamp.nil? || raw_timestamp.to_s.strip.empty?
 
-          case raw_timestamp
-          when Numeric
-            Time.at(raw_timestamp).utc
-          when String
-            if raw_timestamp.match?(/\A\d+(?:\.\d+)?\z/)
-              Time.at(raw_timestamp.to_f).utc
+          parsed =
+            case raw_timestamp
+            when Numeric
+              Time.at(raw_timestamp).utc
+            when String
+              if raw_timestamp.match?(/\A\d+(?:\.\d+)?\z/)
+                Time.at(raw_timestamp.to_f).utc
+              else
+                Time.iso8601(raw_timestamp).utc
+              end
             else
-              Time.iso8601(raw_timestamp).utc
+              raise EnvelopeParseError, "Invalid event timestamp"
             end
-          else
-            raise EnvelopeParseError, "Invalid event timestamp"
-          end
+
+          max_skew = @config.respond_to?(:max_future_clock_skew) && @config.max_future_clock_skew ? @config.max_future_clock_skew : 5.minutes
+          max_future = fallback_utc + max_skew
+          min_past = fallback_utc - (@config.retention_period * 2)
+          return fallback_utc if parsed > max_future
+          return min_past if parsed < min_past
+
+          parsed
         rescue ArgumentError, RangeError
           raise EnvelopeParseError, "Malformed event timestamp"
         end
@@ -156,7 +211,7 @@ module Sentrace
 
           return nil if raw_msg.nil? || raw_msg.empty?
 
-          self.class.truncate_utf8_bytes(raw_msg, @config.max_message_bytes)
+          self.class.scrub_and_truncate_bytes(raw_msg, @config.max_message_bytes, allow_newlines: true)
         end
 
         def extract_exception(raw_exception)
@@ -193,7 +248,7 @@ module Sentrace
 
           result = {
             "type" => truncate_chars(primary["type"], 255),
-            "value" => self.class.truncate_utf8_bytes(primary["value"], @config.max_message_bytes),
+            "value" => self.class.scrub_and_truncate_bytes(primary["value"], @config.max_message_bytes, allow_newlines: true),
             "frames" => bounded_frames
           }
           mechanism = extract_mechanism(primary["mechanism"])
@@ -238,14 +293,14 @@ module Sentrace
               "type" => truncate_chars(crumb["type"], 64),
               "category" => truncate_chars(crumb["category"], 128),
               "level" => truncate_chars(crumb["level"], 32),
-              "message" => self.class.truncate_utf8_bytes(crumb["message"], 1024)
+              "message" => self.class.scrub_and_truncate_bytes(crumb["message"], 1024, allow_newlines: true)
             }.compact
 
             if crumb["data"].is_a?(Hash) && crumb["data"].any?
               entry["data"] = crumb["data"].first(16).to_h do |k, v|
                 [
-                  self.class.truncate_utf8_bytes(k.to_s, 64),
-                  v.is_a?(Numeric) || v == true || v == false || v.nil? ? v : self.class.truncate_utf8_bytes(v.to_s, 256)
+                  self.class.scrub_and_truncate_bytes(k.to_s, 64, allow_newlines: false),
+                  v.is_a?(Numeric) || v == true || v == false || v.nil? ? v : self.class.scrub_and_truncate_bytes(v.to_s, 256, allow_newlines: false)
                 ]
               end
             end
@@ -268,10 +323,11 @@ module Sentrace
           tags = pairs.first(@config.max_tags).each_with_object({}) do |(raw_key, raw_val), acc|
             next if raw_key.nil?
 
-            key = self.class.truncate_utf8_bytes(raw_key.to_s.strip, @config.max_tag_key_bytes)
+            cleaned_key = self.class.strip_unsafe_characters(raw_key.to_s, allow_newlines: false).to_s.strip
+            key = self.class.truncate_utf8_bytes(cleaned_key, @config.max_tag_key_bytes)
             next if key.nil? || key.empty?
 
-            acc[key] = raw_val.nil? ? nil : self.class.truncate_utf8_bytes(raw_val.to_s, @config.max_tag_value_bytes)
+            acc[key] = raw_val.nil? ? nil : self.class.scrub_and_truncate_bytes(raw_val.to_s, @config.max_tag_value_bytes, allow_newlines: false)
           end
 
           header_request_id = extract_safe_request_id(raw_request)
@@ -316,7 +372,8 @@ module Sentrace
             break if bounded.size >= @config.max_context_entries
             next unless ctx_val.is_a?(Hash)
 
-            key_str = self.class.truncate_utf8_bytes(ctx_key.to_s, 64)
+            cleaned_key = self.class.strip_unsafe_characters(ctx_key.to_s, allow_newlines: false).to_s.strip
+            key_str = self.class.truncate_utf8_bytes(cleaned_key, 64)
             next if key_str.nil? || key_str.empty?
 
             candidate = bounded.merge(key_str => bound_nested_value(ctx_val, depth: 0))
@@ -334,14 +391,15 @@ module Sentrace
           case value
           when Hash
             value.first(16).to_h do |k, v|
-              [ self.class.truncate_utf8_bytes(k.to_s, 64), bound_nested_value(v, depth: depth + 1) ]
+              cleaned_k = self.class.strip_unsafe_characters(k.to_s, allow_newlines: false).to_s
+              [ self.class.truncate_utf8_bytes(cleaned_k, 64), bound_nested_value(v, depth: depth + 1) ]
             end
           when Array
             value.first(16).map { |v| bound_nested_value(v, depth: depth + 1) }
           when Numeric, TrueClass, FalseClass, NilClass
             value
           else
-            self.class.truncate_utf8_bytes(value.to_s, 512)
+            self.class.scrub_and_truncate_bytes(value.to_s, 512, allow_newlines: true)
           end
         end
 
@@ -360,7 +418,8 @@ module Sentrace
           cleaned = raw_fingerprint.first(MAX_FINGERPRINT_ITEMS).filter_map do |part|
             next unless part.is_a?(String) || part.is_a?(Symbol) || part.is_a?(Numeric)
 
-            str = self.class.truncate_utf8_bytes(part.to_s.strip, MAX_FINGERPRINT_PART_BYTES)
+            sanitized_part = self.class.strip_unsafe_characters(part.to_s, allow_newlines: false).to_s.strip
+            str = self.class.truncate_utf8_bytes(sanitized_part, MAX_FINGERPRINT_PART_BYTES)
             str unless str.nil? || str.empty?
           end
 
@@ -370,7 +429,16 @@ module Sentrace
         def truncate_chars(value, max_chars)
           return nil if value.nil?
 
-          str = value.to_s.dup.force_encoding(Encoding::UTF_8).scrub.strip
+          str = self.class.strip_unsafe_characters(value, allow_newlines: false).to_s.strip
+          return nil if str.empty?
+
+          str.length > max_chars ? str[0, max_chars] : str
+        end
+
+        def truncate_multiline_chars(value, max_chars)
+          return nil if value.nil?
+
+          str = self.class.strip_unsafe_characters(value, allow_newlines: true).to_s.strip
           return nil if str.empty?
 
           str.length > max_chars ? str[0, max_chars] : str

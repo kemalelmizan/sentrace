@@ -142,7 +142,11 @@ RSpec.describe "MCP Multi-Environment Federation Integration" do
   end
 
   before do
-    Sentrace::Ingestion::Processor.ingest_event(shared_payload, project: local_project)
+    Sentrace::Ingestion::Processor.ingest_event(
+      shared_payload,
+      project: local_project,
+      received_at: Time.utc(2026, 11, 16, 3, 0, 5)
+    )
   end
 
   let(:shared_fingerprint) { Sentrace::Issue.first.fingerprint }

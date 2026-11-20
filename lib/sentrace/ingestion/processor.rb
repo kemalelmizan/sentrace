@@ -4,16 +4,35 @@ module Sentrace
       EnvelopeResult = Data.define(:primary_event_id, :accepted_event_ids, :duplicate_event_ids, :discarded_count)
 
       class << self
-        def process_raw_envelope(raw_body, project:, received_at: Time.current, config: Sentrace.configuration)
-          new(config: config).process_raw_envelope(raw_body, project: project, received_at: received_at)
+        def process_raw_envelope(
+          raw_body,
+          project:,
+          received_at: Time.current,
+          config: Sentrace.configuration,
+          ingestion_source: "http_dsn"
+        )
+          new(config: config).process_raw_envelope(
+            raw_body,
+            project: project,
+            received_at: received_at,
+            ingestion_source: ingestion_source
+          )
         end
 
-        def ingest_event(raw_event, project:, envelope_headers: {}, received_at: Time.current, config: Sentrace.configuration)
+        def ingest_event(
+          raw_event,
+          project:,
+          envelope_headers: {},
+          received_at: Time.current,
+          config: Sentrace.configuration,
+          ingestion_source: "in_process"
+        )
           new(config: config).ingest_event(
             raw_event,
             project: project,
             envelope_headers: envelope_headers,
-            received_at: received_at
+            received_at: received_at,
+            ingestion_source: ingestion_source
           )
         end
       end
@@ -22,7 +41,7 @@ module Sentrace
         @config = config
       end
 
-      def process_raw_envelope(raw_body, project:, received_at: Time.current)
+      def process_raw_envelope(raw_body, project:, received_at: Time.current, ingestion_source: "http_dsn")
         parsed = EnvelopeParser.parse(
           raw_body,
           max_items: @config.max_envelope_items,
@@ -36,7 +55,8 @@ module Sentrace
             raw_event,
             project: project,
             envelope_headers: parsed.headers,
-            received_at: received_at
+            received_at: received_at,
+            ingestion_source: ingestion_source
           )
           if result.duplicate
             duplicate_ids << result.event_id
@@ -55,13 +75,14 @@ module Sentrace
         )
       end
 
-      def ingest_event(raw_event, project:, envelope_headers: {}, received_at: Time.current)
+      def ingest_event(raw_event, project:, envelope_headers: {}, received_at: Time.current, ingestion_source: "in_process")
         project_id = project.is_a?(Integer) ? project : project.id
         normalized = EventNormalizer.normalize(
           raw_event,
           envelope_headers: envelope_headers,
           received_at: received_at,
-          config: @config
+          config: @config,
+          ingestion_source: ingestion_source
         )
 
         # Fast-path read check via unique index (project_id, event_id) before running sanitizer or writes
@@ -80,7 +101,8 @@ module Sentrace
         Issues::Grouper.persist!(
           project_id: project_id,
           normalized_event: sanitized,
-          fingerprint: fingerprint
+          fingerprint: fingerprint,
+          now: received_at
         )
       end
 

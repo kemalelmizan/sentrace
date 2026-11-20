@@ -6,7 +6,7 @@ Enforces configurable time-based retention on stored error events and orphaned i
 ## Requirements
 
 ### Requirement: Bounded batch deletion of expired error events
-`Sentrace::Retention::Cleaner` SHALL delete `sentrace_events` rows whose `occurred_at` precedes `Time.current - config.retention_period` in bounded batches of `config.retention_batch_size`, and MUST NOT immediately delete parent `sentrace_issues` rows when their events expire.
+`Sentrace::Retention::Cleaner` SHALL delete `sentrace_events` rows whose `occurred_at` or `received_at` precedes `Time.current - config.retention_period` in bounded batches of `config.retention_batch_size`, and MUST NOT immediately delete parent `sentrace_issues` rows when their events expire.
 
 #### Scenario: Pruning expired events across multiple batches preserves parent issues
 - **GIVEN** a project issue with 5 expired events (`occurred_at` 45 days ago) and 1 recent event (`occurred_at` 2 days ago) and `retention_batch_size = 2`

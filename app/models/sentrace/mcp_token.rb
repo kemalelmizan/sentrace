@@ -8,11 +8,14 @@ module Sentrace
     MAX_RAW_TOKEN_BYTES = 512
     DUMMY_DIGEST = ("0" * 64).freeze
     ENSURED_TOKEN_FORMAT = /\Asnt_mcp_[A-Za-z0-9_-]{24,256}\z/
-    ALLOWED_SCOPES = %w[read write].freeze
+    ALLOWED_SCOPES = %w[read write admin].freeze
     DEFAULT_SCOPES = "read,write".freeze
     READ_ONLY_SCOPES = "read".freeze
+    LAST_USED_TOUCH_INTERVAL = 60
 
     scope :active, -> { where(active: true, revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
+
+    before_validation :sanitize_name
 
     validates :name, presence: true, length: { maximum: 120 }
     validates :token_prefix, presence: true, length: { maximum: 16 }
@@ -25,7 +28,7 @@ module Sentrace
       end
 
       def issue!(name: "default", expires_at: nil, expires_in: nil, scopes: nil, read_only: false)
-        normalized_name = name.to_s.strip
+        normalized_name = RequestSecurity.sanitize_single_line(name, max_chars: 120).to_s
         raise ArgumentError, "Token name is required" if normalized_name.empty?
 
         resolved_expires_at = resolve_expires_at(expires_at: expires_at, expires_in: expires_in)
@@ -75,7 +78,7 @@ module Sentrace
       end
 
       def rotate!(name: "default", expires_at: nil, expires_in: nil, scopes: nil, read_only: false)
-        normalized_name = name.to_s.strip
+        normalized_name = RequestSecurity.sanitize_single_line(name, max_chars: 120).to_s
         raise ArgumentError, "Token name is required" if normalized_name.empty?
 
         transaction do
@@ -94,9 +97,11 @@ module Sentrace
       end
 
       def ensure!(name: "default", token: nil, expires_at: nil, expires_in: nil, scopes: nil, read_only: false)
-        normalized_name = name.to_s.strip
+        normalized_name = RequestSecurity.sanitize_single_line(name, max_chars: 120).to_s
         raise ArgumentError, "Token name is required" if normalized_name.empty?
 
+        scopes_supplied = !scopes.nil? || read_only
+        expiry_supplied = !expires_at.nil? || !expires_in.nil?
         resolved_expires_at = resolve_expires_at(expires_at: expires_at, expires_in: expires_in)
         resolved_scopes = resolve_scopes(scopes: scopes, read_only: read_only)
 
@@ -116,6 +121,13 @@ module Sentrace
             if existing.expired?
               raise ArgumentError, "Provided MCP token has expired and cannot be reused"
             end
+            reconcile_ensured_attributes!(
+              existing,
+              scopes: resolved_scopes,
+              scopes_supplied: scopes_supplied,
+              expires_at: resolved_expires_at,
+              expiry_supplied: expiry_supplied
+            )
             return [ existing, nil ]
           end
 
@@ -129,7 +141,16 @@ module Sentrace
           [ record, nil ]
         else
           existing_active = active.where(name: normalized_name).order(created_at: :desc, id: :desc).first
-          return [ existing_active, nil ] if existing_active
+          if existing_active
+            reconcile_ensured_attributes!(
+              existing_active,
+              scopes: resolved_scopes,
+              scopes_supplied: scopes_supplied,
+              expires_at: resolved_expires_at,
+              expiry_supplied: expiry_supplied
+            )
+            return [ existing_active, nil ]
+          end
 
           issue!(
             name: normalized_name,
@@ -140,6 +161,13 @@ module Sentrace
       end
 
       private
+        def reconcile_ensured_attributes!(record, scopes:, scopes_supplied:, expires_at:, expiry_supplied:)
+          updates = {}
+          updates[:scopes] = scopes if scopes_supplied && record.scopes != scopes
+          updates[:expires_at] = expires_at if expiry_supplied && record.expires_at != expires_at
+          record.update!(updates) if updates.any?
+        end
+
         def resolve_expires_at(expires_at:, expires_in:)
           if !expires_at.nil? && !expires_in.nil?
             raise ArgumentError, "Specify either expires_at or expires_in, not both"
@@ -199,7 +227,10 @@ module Sentrace
         end
 
         def touch_last_used_at(record)
-          record.update_columns(last_used_at: Time.current)
+          now = Time.current
+          return if record.last_used_at && record.last_used_at > (now - LAST_USED_TOUCH_INTERVAL)
+
+          record.update_columns(last_used_at: now)
         rescue ActiveRecord::ActiveRecordError
           nil
         end
@@ -226,10 +257,18 @@ module Sentrace
     end
 
     def read_only?
-      !allows_scope?("write")
+      !allows_scope?("write") && !allows_scope?("admin")
+    end
+
+    def admin?
+      allows_scope?("admin")
     end
 
     private
+      def sanitize_name
+        self.name = RequestSecurity.sanitize_single_line(name, max_chars: 120) unless name.nil?
+      end
+
       def validate_scopes
         parsed = scopes_list
         if parsed.empty? || (parsed - ALLOWED_SCOPES).any?

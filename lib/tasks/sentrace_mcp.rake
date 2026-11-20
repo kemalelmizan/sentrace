@@ -14,7 +14,9 @@ namespace :sentrace do
       desc "Issue a new Sentrace MCP bearer token (stored as SHA-256 digest)"
       task :create, [ :name ] => :environment do |_task, args|
         read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        admin_flag = ENV["ADMIN"].to_s.casecmp("true").zero?
         scopes = ENV["SCOPES"]&.strip
+        scopes = "read,write,admin" if (scopes.nil? || scopes.empty?) && admin_flag && !read_only
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
 
@@ -31,7 +33,9 @@ namespace :sentrace do
       desc "Rotate active Sentrace MCP bearer token(s) for a given name"
       task :rotate, [ :name ] => :environment do |_task, args|
         read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        admin_flag = ENV["ADMIN"].to_s.casecmp("true").zero?
         scopes = ENV["SCOPES"]&.strip
+        scopes = "read,write,admin" if (scopes.nil? || scopes.empty?) && admin_flag && !read_only
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
 
