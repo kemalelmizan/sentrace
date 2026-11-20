@@ -1,11 +1,24 @@
 module Sentrace
   module Internal
     class BaseController < ApplicationController
+      MAX_INTERNAL_REQUEST_BYTES = 64.kilobytes
+      BODY_CHECK_CHUNK_BYTES = 16 * 1024
+
       before_action :verify_https_or_loopback!
       before_action :verify_internal_ip_allowlist!
       before_action :verify_request_origin_and_csrf!
       before_action :verify_internal_rate_limit!
+      before_action :verify_request_body_bounds!
       before_action :authenticate_internal_request!
+
+      # Guard against Rails' ActionController::Instrumentation eagerly parsing oversized
+      # or multipart request bodies before before_action filters run.
+      def process_action(*)
+        if multipart_or_oversized_body?
+          request.set_header("action_dispatch.request.request_parameters", {})
+        end
+        super
+      end
 
       rescue_from ActiveRecord::RecordNotFound do |err|
         render json: { error: err.message }, status: :not_found
@@ -52,6 +65,42 @@ module Sentrace
           unless rate_result[:allowed]
             render_rate_limited(rate_result[:retry_after])
           end
+        end
+
+        def verify_request_body_bounds!
+          if request.media_type.to_s.casecmp("multipart/form-data").zero?
+            return render json: { error: "Unsupported media type" }, status: :unsupported_media_type
+          end
+
+          if oversized_request_body?
+            render json: { error: "Payload too large" }, status: 413
+          end
+        end
+
+        def multipart_or_oversized_body?
+          request.media_type.to_s.casecmp("multipart/form-data").zero? || oversized_request_body?
+        end
+
+        def oversized_request_body?
+          return @oversized_request_body unless @oversized_request_body.nil?
+
+          if request.content_length && request.content_length > MAX_INTERNAL_REQUEST_BYTES
+            return @oversized_request_body = true
+          end
+
+          io = request.body
+          return @oversized_request_body = false unless io
+
+          io.rewind if io.respond_to?(:rewind)
+          total = 0
+          while (chunk = io.read(BODY_CHECK_CHUNK_BYTES))
+            total += chunk.bytesize
+            if total > MAX_INTERNAL_REQUEST_BYTES
+              return @oversized_request_body = true
+            end
+          end
+          io.rewind if io.respond_to?(:rewind)
+          @oversized_request_body = false
         end
 
         def authenticate_internal_request!
@@ -112,7 +161,7 @@ module Sentrace
         end
 
         def rate_limit_identifier
-          request.remote_ip.to_s.strip.presence || "unknown"
+          RequestSecurity.client_ip(request).presence || "unknown"
         end
 
         def render_rate_limited(retry_after)

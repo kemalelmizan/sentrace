@@ -107,16 +107,19 @@ module Sentrace
             encode_cursor(ts: page_rows.last.last_seen_at, id: page_rows.last.id)
           end
 
+        sources_by_issue = fetch_ingestion_sources_for_issues(page_rows.map(&:id))
+
         {
           "environment" => @environment_name,
           "untrusted_telemetry_notice" => UNTRUSTED_TELEMETRY_NOTICE,
-          "issues" => page_rows.map { |issue| serialize_issue_summary(issue) },
+          "issues" => page_rows.map { |issue| serialize_issue_summary(issue, ingestion_sources: sources_by_issue[issue.id]) },
           "next_cursor" => next_cursor
         }
       end
 
       def get_issue(issue_id:, project_id: nil)
         issue = find_scoped_issue!(issue_id: issue_id, project_id: project_id)
+        sources_by_issue = fetch_ingestion_sources_for_issues([ issue.id ])
         release_dist = issue.events
           .where.not(release: nil)
           .group(:release)
@@ -137,7 +140,7 @@ module Sentrace
         {
           "environment" => @environment_name,
           "untrusted_telemetry_notice" => UNTRUSTED_TELEMETRY_NOTICE,
-          "issue" => serialize_issue_summary(issue).merge(
+          "issue" => serialize_issue_summary(issue, ingestion_sources: sources_by_issue[issue.id]).merge(
             "release_distribution" => release_dist,
             "environment_distribution" => env_dist,
             "recent_events" => recent_events
@@ -149,10 +152,12 @@ module Sentrace
         normalized_status = validate_required_status(status)
         issue = find_scoped_issue!(issue_id: issue_id, project_id: project_id)
         issue.update!(status: normalized_status)
+        sources_by_issue = fetch_ingestion_sources_for_issues([ issue.id ])
 
         {
           "environment" => @environment_name,
-          "issue" => serialize_issue_summary(issue)
+          "untrusted_telemetry_notice" => UNTRUSTED_TELEMETRY_NOTICE,
+          "issue" => serialize_issue_summary(issue, ingestion_sources: sources_by_issue[issue.id])
         }
       end
 
@@ -286,8 +291,20 @@ module Sentrace
           }
         end
 
-        def serialize_issue_summary(issue)
-          {
+        def fetch_ingestion_sources_for_issues(issue_ids)
+          return {} if issue_ids.empty?
+
+          rows = Event.where(issue_id: issue_ids)
+            .distinct
+            .pluck(:issue_id, Arel.sql("COALESCE(event_data ->> 'ingestion_source', 'in_process')"))
+
+          rows.each_with_object(Hash.new { |h, k| h[k] = [] }) do |(issue_id, source), acc|
+            acc[issue_id] << source
+          end.transform_values(&:sort)
+        end
+
+        def serialize_issue_summary(issue, ingestion_sources: nil)
+          summary = {
             "id" => issue.id,
             "project_id" => issue.project_id,
             "environment" => @environment_name,
@@ -300,6 +317,8 @@ module Sentrace
             "last_seen_at" => issue.last_seen_at.utc.iso8601,
             "event_count" => issue.event_count
           }
+          summary["ingestion_sources"] = Array(ingestion_sources) unless ingestion_sources.nil?
+          summary
         end
 
         def serialize_event_summary(event)

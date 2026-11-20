@@ -81,14 +81,22 @@ export function installBrowserInstrumentation(hooks: BrowserInstrumentationHooks
           colno?: number;
         }
         | undefined;
-      const err =
-        ev && ev.error !== undefined && ev.error !== null
-          ? ev.error
-          : new Error((ev && ev.message) || "Uncaught window error");
+      let err: unknown;
+      if (ev && ev.error !== undefined && ev.error !== null) {
+        err = ev.error;
+      } else {
+        const syntheticErr = new Error((ev && ev.message) || "Uncaught window error");
+        if (ev && ev.filename) {
+          syntheticErr.stack = "";
+        }
+        err = syntheticErr;
+      }
+      const safeErrorFilename =
+        ev && ev.filename ? scrubUrl(ev.filename, hooks.redactFields, hooks.allowFields) || ev.filename : undefined;
       const fallbackFrame: StackFrame | undefined =
-        ev && ev.filename
+        safeErrorFilename
           ? {
-            filename: ev.filename,
+            filename: safeErrorFilename,
             function: "?",
             lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
             colno: typeof ev.colno === "number" ? ev.colno : undefined,

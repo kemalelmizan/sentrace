@@ -6,6 +6,7 @@ module Sentrace
 
     @cache_mutex = Mutex.new
     @project_key_cache = {}
+    @request_fallback_warned = false
 
     class << self
       def resolve(base_url: nil, request: nil, project: nil, dsn: nil, config: Sentrace.configuration)
@@ -35,7 +36,10 @@ module Sentrace
       end
 
       def clear_cache!
-        @cache_mutex.synchronize { @project_key_cache.clear }
+        @cache_mutex.synchronize do
+          @project_key_cache.clear
+          @request_fallback_warned = false
+        end
       end
 
       def detect_engine_mount_path
@@ -102,9 +106,17 @@ module Sentrace
         end
 
         def resolve_mounted_base_url(base_url:, request:, config: Sentrace.configuration)
-          raw_base = non_blank(base_url) ||
-            non_blank(config&.public_base_url) ||
-            (request.respond_to?(:base_url) ? non_blank(request.base_url) : nil)
+          explicit_base = non_blank(base_url) || non_blank(config&.public_base_url)
+          raw_base =
+            if explicit_base
+              explicit_base
+            elsif request.respond_to?(:base_url)
+              return nil if config && config.respond_to?(:allow_request_base_url_fallback) && !config.allow_request_base_url_fallback
+
+              req_base = non_blank(request.base_url)
+              warn_production_request_fallback_once! if req_base
+              req_base
+            end
           return nil unless raw_base
 
           uri = URI.parse(raw_base.to_s.strip)
@@ -119,6 +131,28 @@ module Sentrace
             clean_base
           end
         rescue URI::InvalidURIError
+          nil
+        end
+
+        def warn_production_request_fallback_once!
+          return unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.production?
+
+          should_warn = @cache_mutex.synchronize do
+            if @request_fallback_warned
+              false
+            else
+              @request_fallback_warned = true
+              true
+            end
+          end
+          return unless should_warn
+
+          Rails.logger&.warn(
+            "[Sentrace] FrontendDsnResolver fell back to request.base_url in production because config.public_base_url " \
+            "and config.frontend_dsn are unset. Configure config.public_base_url (and Rails config.hosts) to prevent " \
+            "Host header poisoning of <meta name=\"sentrace-dsn\">."
+          )
+        rescue StandardError
           nil
         end
 

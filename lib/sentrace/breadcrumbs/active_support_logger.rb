@@ -3,8 +3,8 @@ module Sentrace
     module ActiveSupportLogger
       IGNORED_SQL_NAMES = %w[SCHEMA TRANSACTION EXPLAIN].freeze
       MAX_RAW_SQL_BYTES = 8192
-      SQL_DOLLAR_QUOTED_LITERAL = /\$((?:[A-Za-z_][A-Za-z0-9_]*)?)\$[\s\S]*?\$\1\$/
       SQL_SINGLE_QUOTED_LITERAL = /'(?:''|\\'|[^'])*'/
+      SQL_UNCLOSED_SINGLE_QUOTED_LITERAL = /'(?:''|\\'|[^'])*\z/
       SQL_OPERATION_REGEX = /\A\s*([A-Za-z]+)/
 
       @mutex = Mutex.new
@@ -114,11 +114,49 @@ module Sentrace
 
           def sanitize_sql_statement(sql)
             bounded_sql = Ingestion::EventNormalizer.truncate_utf8_bytes(sql, MAX_RAW_SQL_BYTES).to_s
-            masked = bounded_sql
-              .gsub(SQL_DOLLAR_QUOTED_LITERAL, "'?'")
+            masked = mask_dollar_quoted_literals(bounded_sql)
               .gsub(SQL_SINGLE_QUOTED_LITERAL, "'?'")
+              .gsub(SQL_UNCLOSED_SINGLE_QUOTED_LITERAL, "'?'")
             collapsed = masked.gsub(/\s+/, " ").strip
             Ingestion::EventNormalizer.truncate_utf8_bytes(collapsed, 256)
+          end
+
+          def mask_dollar_quoted_literals(sql)
+            return sql unless sql.include?("$")
+
+            out = +""
+            pos = 0
+            len = sql.length
+
+            while pos < len
+              dollar_idx = sql.index("$", pos)
+              unless dollar_idx
+                out << sql[pos...len]
+                break
+              end
+
+              tag_match = /\G\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.match(sql, dollar_idx)
+              unless tag_match
+                out << sql[pos..dollar_idx]
+                pos = dollar_idx + 1
+                next
+              end
+
+              out << sql[pos...dollar_idx]
+              tag = tag_match[0]
+              close_idx = sql.index(tag, tag_match.end(0))
+              if close_idx
+                out << "'?'"
+                pos = close_idx + tag.length
+              else
+                # Truncated dollar-quoted literal: mask everything to the end so no secret leaks
+                out << "'?'"
+                pos = len
+                break
+              end
+            end
+
+            out
           end
 
           def scrub_url_or_path(raw_path)

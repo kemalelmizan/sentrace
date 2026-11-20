@@ -679,3 +679,54 @@ test("Async withScope retains isolated scope across await boundaries and cross-o
     Sentrace.resetClient();
   }
 });
+
+test("window.onerror scrubs fallbackFrame filename and stack frames honor custom redactFields", async () => {
+  Sentrace.resetClient();
+  const prevWin = globalThis.window;
+  const prevDoc = globalThis.document;
+  const { fakeWindow, fakeDocument } = createFakeBrowserEnv({});
+  const mem = createMemoryTransport();
+
+  try {
+    globalThis.window = fakeWindow;
+    globalThis.document = fakeDocument;
+
+    Sentrace.init({
+      dsn: "https://pub_err@shop.example.com/sentrace/7",
+      railsIntegration: false,
+      redactFields: ["custom_secret"],
+      transport: mem.factory
+    });
+
+    // window.onerror with no Error object uses fallbackFrame.filename, which MUST be scrubbed
+    fakeWindow.dispatch("error", {
+      message: "Script error.",
+      filename: "https://shop.example.com/embed.js?custom_secret=topsecret&X-Amz-Signature=sig123&ok=1#access_token=frag",
+      lineno: 12,
+      colno: 4
+    });
+
+    const errWithStack = new Error("Stack redact check");
+    errWithStack.stack = [
+      "Error: Stack redact check",
+      "    at run (https://shop.example.com/app.js?custom_secret=stacksec&ok=2:5:10)"
+    ].join("\n");
+    Sentrace.captureException(errWithStack);
+
+    assert.equal(mem.envelopes.length, 2);
+    const onErrorFrame = mem.envelopes[0].event.exception.values[0].stacktrace.frames[0];
+    assert.equal(
+      onErrorFrame.filename,
+      "https://shop.example.com/embed.js?custom_secret=[REDACTED]&X-Amz-Signature=[REDACTED]&ok=1"
+    );
+
+    const stackFrame = mem.envelopes[1].event.exception.values[0].stacktrace.frames[0];
+    assert.equal(stackFrame.filename, "https://shop.example.com/app.js?custom_secret=[REDACTED]&ok=2");
+
+    await Sentrace.close();
+  } finally {
+    globalThis.window = prevWin;
+    globalThis.document = prevDoc;
+    Sentrace.resetClient();
+  }
+});

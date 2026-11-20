@@ -25,8 +25,8 @@ module Sentrace
       INTEGER_REGEX = /\b\d+\b/
 
       class << self
-        def compute(normalized_event)
-          new.compute(normalized_event)
+        def compute(normalized_event, trust_domain = nil)
+          new.compute(normalized_event, trust_domain)
         end
 
         def normalize_filename(raw_filename)
@@ -72,8 +72,11 @@ module Sentrace
         end
       end
 
-      def compute(normalized_event)
+      def compute(normalized_event, trust_domain = nil)
         tokens = build_tokens(normalized_event)
+        if trust_domain && !trust_domain.to_s.empty?
+          tokens = [ "domain:#{trust_domain}", *tokens ]
+        end
         canonical_payload = JSON.generate(tokens)
         OpenSSL::Digest::SHA256.hexdigest(canonical_payload)
       end

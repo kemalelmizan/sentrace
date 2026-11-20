@@ -260,14 +260,25 @@ export declare function generateEventId(): string;
 export declare function serializeEnvelope(event: SentryEvent, dsn: ParsedDsn): string;
 export declare function createBrowserTransport(endpointUrl: string): Transport;
 export declare function isInAppFilename(filename: string | undefined): boolean;
-export declare function parseStackLine(line: string): StackFrame | null;
-export declare function parseStackFrames(stack: string | undefined, maxFrames?: number): StackFrame[];
+export declare function parseStackLine(
+  line: string,
+  redactFields?: string[],
+  allowFields?: string[]
+): StackFrame | null;
+export declare function parseStackFrames(
+  stack: string | undefined,
+  maxFrames?: number,
+  redactFields?: string[],
+  allowFields?: string[]
+): StackFrame[];
 export declare function extractExceptionChain(
   error: unknown,
   maxFrames?: number,
   handled?: boolean,
   mechanismType?: string,
-  syntheticException?: Error
+  syntheticException?: Error,
+  redactFields?: string[],
+  allowFields?: string[]
 ): SentryExceptionValue[];
 
 declare const Sentrace: {

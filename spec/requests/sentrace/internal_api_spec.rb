@@ -137,7 +137,7 @@ RSpec.describe "Sentrace Internal Administrative API (/sentrace/internal)", type
       Sentrace.reset_configuration!
       _ro_record, ro_raw = Sentrace::McpToken.issue!(name: "internal-ro", read_only: true)
       ro_headers = { "Authorization" => "Bearer #{ro_raw}" }
-      _rw_record, rw_raw = Sentrace::McpToken.issue!(name: "internal-rw")
+      _rw_record, rw_raw = Sentrace::McpToken.issue!(name: "internal-rw", scopes: "read,write")
       rw_headers = { "Authorization" => "Bearer #{rw_raw}" }
 
       proj, _ = Sentrace::Project.provision!(slug: "ro-internal-proj")

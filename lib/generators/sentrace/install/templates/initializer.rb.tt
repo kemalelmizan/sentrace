@@ -8,13 +8,16 @@ Sentrace.configure do |config|
   # config.sample_rate = 1.0
   # config.async_queue_size = 256
 
-  # Optional explicit public DSN or canonical public base URL override
-  # (recommended behind CDNs/caches; required for cross-origin SPAs):
+  # Canonical public base URL or explicit public DSN override
+  # (strongly recommended in production behind CDNs/caches to prevent Host header poisoning):
   # config.frontend_dsn = ENV["SENTRACE_FRONTEND_DSN"]
   # config.public_base_url = ENV["SENTRACE_PUBLIC_BASE_URL"]
+  # config.allow_request_base_url_fallback = false # set false to fail closed if public_base_url is unset
   config.release = ENV["APP_RELEASE"]
   # config.cors_allowed_origins = []
   # config.ingestion_rate_limit_per_minute = 300
+  # config.ingestion_project_rate_limit_per_minute = 3_000
+  # config.trust_forwarded_headers = false # set false when not behind a trusted reverse proxy (or lock down Rails config.action_dispatch.trusted_proxies)
 
   config.retention_period = 30.days
   config.orphan_issue_retention_period = 7.days
@@ -51,7 +54,8 @@ Sentrace.configure do |config|
     # production: {
     #   transport: :http,
     #   url: ENV["SENTRACE_PRODUCTION_MCP_URL"],
-    #   token: ENV["SENTRACE_PRODUCTION_MCP_TOKEN"]
+    #   token: ENV["SENTRACE_PRODUCTION_MCP_TOKEN"],
+    #   read_only: true
     # }
   }
 end

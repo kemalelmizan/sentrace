@@ -29,8 +29,12 @@ module Sentrace
       MAX_FINGERPRINT_ITEMS = 32
       MAX_FINGERPRINT_PART_BYTES = 256
       PRE_SANITIZE_MAX_BYTES = 8192
+      MAX_RAW_ARRAY_SCAN = 256
+      MAX_SAFE_INTEGER = (1 << 63) - 1
+      MIN_SAFE_INTEGER = -(1 << 63)
+      MAX_TIMESTAMP_STRING_BYTES = 64
       ANSI_ESCAPE_REGEX = /\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/
-      UNSAFE_UNICODE_REGEX = /[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\u061C\uFEFF\u{E0000}-\u{E007F}]/
+      UNSAFE_UNICODE_REGEX = /[\u00AD\u034F\u061C\u115F\u1160\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/
       DISALLOWED_MULTILINE_CONTROLS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u0080-\u009F]/
       DISALLOWED_SINGLELINE_CONTROLS_REGEX = /[\x00-\x1F\x7F\u0080-\u009F]/
 
@@ -166,15 +170,37 @@ module Sentrace
 
         def extract_timestamp(raw_timestamp, fallback:)
           fallback_utc = fallback.utc
-          return fallback_utc if raw_timestamp.nil? || raw_timestamp.to_s.strip.empty?
+          return fallback_utc if raw_timestamp.nil?
+          return fallback_utc if raw_timestamp.is_a?(String) && raw_timestamp.strip.empty?
+
+          max_skew = @config.respond_to?(:max_future_clock_skew) && @config.max_future_clock_skew ? @config.max_future_clock_skew : 5.minutes
+          max_future = fallback_utc + max_skew
+          min_past = fallback_utc - (@config.retention_period * 2)
 
           parsed =
             case raw_timestamp
+            when Integer
+              return fallback_utc if raw_timestamp > MAX_SAFE_INTEGER
+              return min_past if raw_timestamp < MIN_SAFE_INTEGER
+
+              Time.at(raw_timestamp).utc
+            when Float
+              raise EnvelopeParseError, "Invalid event timestamp" unless raw_timestamp.finite?
+              return fallback_utc if raw_timestamp > MAX_SAFE_INTEGER
+              return min_past if raw_timestamp < MIN_SAFE_INTEGER
+
+              Time.at(raw_timestamp).utc
             when Numeric
               Time.at(raw_timestamp).utc
             when String
+              raise EnvelopeParseError, "Malformed event timestamp" if raw_timestamp.bytesize > MAX_TIMESTAMP_STRING_BYTES
+
               if raw_timestamp.match?(/\A\d+(?:\.\d+)?\z/)
-                Time.at(raw_timestamp.to_f).utc
+                numeric_val = raw_timestamp.to_f
+                raise EnvelopeParseError, "Malformed event timestamp" unless numeric_val.finite?
+                return fallback_utc if numeric_val > MAX_SAFE_INTEGER
+
+                Time.at(numeric_val).utc
               else
                 Time.iso8601(raw_timestamp).utc
               end
@@ -182,9 +208,6 @@ module Sentrace
               raise EnvelopeParseError, "Invalid event timestamp"
             end
 
-          max_skew = @config.respond_to?(:max_future_clock_skew) && @config.max_future_clock_skew ? @config.max_future_clock_skew : 5.minutes
-          max_future = fallback_utc + max_skew
-          min_past = fallback_utc - (@config.retention_period * 2)
           return fallback_utc if parsed > max_future
           return min_past if parsed < min_past
 
@@ -236,12 +259,12 @@ module Sentrace
               with_trace ? with_trace.dig("stacktrace", "frames") : []
             end
 
-          bounded_frames = raw_frames.select { |f| f.is_a?(Hash) }.last(@config.max_stack_frames).map do |frame|
+          bounded_frames = take_last_hashes(raw_frames, @config.max_stack_frames).map do |frame|
             {
               "filename" => truncate_chars(frame["filename"] || frame["abs_path"], 512),
               "function" => truncate_chars(frame["function"], 255),
-              "lineno" => frame["lineno"].is_a?(Integer) ? frame["lineno"] : nil,
-              "colno" => frame["colno"].is_a?(Integer) ? frame["colno"] : nil,
+              "lineno" => safe_int_or_nil(frame["lineno"]),
+              "colno" => safe_int_or_nil(frame["colno"]),
               "in_app" => frame["in_app"] == true
             }.compact
           end
@@ -287,7 +310,7 @@ module Sentrace
               []
             end
 
-          items.select { |b| b.is_a?(Hash) }.last(@config.max_breadcrumbs).map do |crumb|
+          take_last_hashes(items, @config.max_breadcrumbs).map do |crumb|
             entry = {
               "timestamp" => normalize_breadcrumb_timestamp(crumb["timestamp"]),
               "type" => truncate_chars(crumb["type"], 64),
@@ -300,7 +323,7 @@ module Sentrace
               entry["data"] = crumb["data"].first(16).to_h do |k, v|
                 [
                   self.class.scrub_and_truncate_bytes(k.to_s, 64, allow_newlines: false),
-                  v.is_a?(Numeric) || v == true || v == false || v.nil? ? v : self.class.scrub_and_truncate_bytes(v.to_s, 256, allow_newlines: false)
+                  bound_breadcrumb_data_value(v)
                 ]
               end
             end
@@ -310,24 +333,25 @@ module Sentrace
         end
 
         def extract_tags(raw_tags, raw_request: nil)
-          pairs =
-            case raw_tags
-            when Hash
-              raw_tags.to_a
-            when Array
-              raw_tags.select { |item| item.is_a?(Array) && item.size == 2 }
-            else
-              []
+          tags = {}
+          max_scan = [ @config.max_tags * 4, MAX_RAW_ARRAY_SCAN ].max
+          scanned = 0
+
+          case raw_tags
+          when Hash
+            raw_tags.each do |raw_key, raw_val|
+              break if tags.size >= @config.max_tags || scanned >= max_scan
+              scanned += 1
+              add_normalized_tag!(tags, raw_key, raw_val)
             end
+          when Array
+            raw_tags.each do |item|
+              break if tags.size >= @config.max_tags || scanned >= max_scan
+              scanned += 1
+              next unless item.is_a?(Array) && item.size == 2
 
-          tags = pairs.first(@config.max_tags).each_with_object({}) do |(raw_key, raw_val), acc|
-            next if raw_key.nil?
-
-            cleaned_key = self.class.strip_unsafe_characters(raw_key.to_s, allow_newlines: false).to_s.strip
-            key = self.class.truncate_utf8_bytes(cleaned_key, @config.max_tag_key_bytes)
-            next if key.nil? || key.empty?
-
-            acc[key] = raw_val.nil? ? nil : self.class.scrub_and_truncate_bytes(raw_val.to_s, @config.max_tag_value_bytes, allow_newlines: false)
+              add_normalized_tag!(tags, item[0], item[1])
+            end
           end
 
           header_request_id = extract_safe_request_id(raw_request)
@@ -336,6 +360,27 @@ module Sentrace
           end
 
           tags
+        end
+
+        def add_normalized_tag!(tags, raw_key, raw_val)
+          return if raw_key.nil?
+
+          cleaned_key = self.class.strip_unsafe_characters(raw_key.to_s, allow_newlines: false).to_s.strip
+          key = self.class.truncate_utf8_bytes(cleaned_key, @config.max_tag_key_bytes)
+          return if key.nil? || key.empty?
+
+          val_str =
+            if raw_val.nil?
+              nil
+            elsif raw_val.is_a?(Hash) || raw_val.is_a?(Array)
+              Sanitizer.redact_structure_to_string(raw_val, config: @config)
+            elsif raw_val.is_a?(Numeric)
+              safe_numeric_string(raw_val)
+            else
+              raw_val.to_s
+            end
+
+          tags[key] = val_str.nil? ? nil : self.class.scrub_and_truncate_bytes(val_str, @config.max_tag_value_bytes, allow_newlines: false)
         end
 
         def extract_safe_request_id(raw_request)
@@ -368,17 +413,28 @@ module Sentrace
           return {} if source.empty?
 
           bounded = {}
+          max_bytes = @config.max_context_bytes
+          max_scan = [ @config.max_context_entries * 2, 64 ].max
+          scanned = 0
+          total_bytes = 2 # "{}"
+
           source.each do |ctx_key, ctx_val|
-            break if bounded.size >= @config.max_context_entries
+            break if bounded.size >= @config.max_context_entries || scanned >= max_scan
+            break if (max_bytes - total_bytes) < 8
+
+            scanned += 1
             next unless ctx_val.is_a?(Hash)
 
             cleaned_key = self.class.strip_unsafe_characters(ctx_key.to_s, allow_newlines: false).to_s.strip
             key_str = self.class.truncate_utf8_bytes(cleaned_key, 64)
-            next if key_str.nil? || key_str.empty?
+            next if key_str.nil? || key_str.empty? || bounded.key?(key_str)
 
-            candidate = bounded.merge(key_str => bound_nested_value(ctx_val, depth: 0))
-            if JSON.generate(candidate).bytesize <= @config.max_context_bytes
-              bounded = candidate
+            bounded_val = bound_nested_value(ctx_val, depth: 0)
+            entry_bytes = JSON.generate(key_str => bounded_val).bytesize - 2
+            separator_bytes = bounded.empty? ? 0 : 1
+            if (total_bytes + separator_bytes + entry_bytes) <= max_bytes
+              bounded[key_str] = bounded_val
+              total_bytes += separator_bytes + entry_bytes
             end
           end
 
@@ -396,17 +452,70 @@ module Sentrace
             end
           when Array
             value.first(16).map { |v| bound_nested_value(v, depth: depth + 1) }
-          when Numeric, TrueClass, FalseClass, NilClass
+          when Numeric
+            safe_numeric_value(value)
+          when TrueClass, FalseClass, NilClass
             value
           else
             self.class.scrub_and_truncate_bytes(value.to_s, 512, allow_newlines: true)
           end
         end
 
+        def bound_breadcrumb_data_value(value)
+          case value
+          when Hash, Array
+            bound_nested_value(value, depth: 1)
+          when Numeric
+            safe_numeric_value(value)
+          when TrueClass, FalseClass, NilClass
+            value
+          else
+            self.class.scrub_and_truncate_bytes(value.to_s, 256, allow_newlines: false)
+          end
+        end
+
+        def take_last_hashes(items, limit)
+          return [] unless items.is_a?(Array) && limit.positive?
+
+          max_scan = [ limit * 4, MAX_RAW_ARRAY_SCAN ].max
+          collected = []
+          scanned = 0
+          items.reverse_each do |item|
+            break if collected.size >= limit || scanned >= max_scan
+            scanned += 1
+            collected << item if item.is_a?(Hash)
+          end
+          collected.reverse!
+        end
+
+        def safe_int_or_nil(val)
+          return nil unless val.is_a?(Integer)
+          return nil if val > MAX_SAFE_INTEGER || val < MIN_SAFE_INTEGER
+
+          val
+        end
+
+        def safe_numeric_value(val)
+          case val
+          when Integer
+            (val > MAX_SAFE_INTEGER || val < MIN_SAFE_INTEGER) ? "[OVERFLOW_INT]" : val
+          when Float
+            val.finite? ? val : nil
+          else
+            val
+          end
+        end
+
+        def safe_numeric_string(val)
+          safe = safe_numeric_value(val)
+          safe.nil? ? nil : safe.to_s
+        end
+
         def normalize_breadcrumb_timestamp(raw_timestamp)
           case raw_timestamp
           when Numeric
-            truncate_chars(raw_timestamp.to_s, 64)
+            safe_str = safe_numeric_string(raw_timestamp)
+            safe_str ? truncate_chars(safe_str, 64) : nil
           when String
             truncate_chars(raw_timestamp, 64)
           end
@@ -418,7 +527,10 @@ module Sentrace
           cleaned = raw_fingerprint.first(MAX_FINGERPRINT_ITEMS).filter_map do |part|
             next unless part.is_a?(String) || part.is_a?(Symbol) || part.is_a?(Numeric)
 
-            sanitized_part = self.class.strip_unsafe_characters(part.to_s, allow_newlines: false).to_s.strip
+            raw_str = part.is_a?(Numeric) ? safe_numeric_string(part) : part.to_s
+            next if raw_str.nil?
+
+            sanitized_part = self.class.strip_unsafe_characters(raw_str, allow_newlines: false).to_s.strip
             str = self.class.truncate_utf8_bytes(sanitized_part, MAX_FINGERPRINT_PART_BYTES)
             str unless str.nil? || str.empty?
           end

@@ -29,7 +29,16 @@ module Sentrace
 
       def route(operation, environment: nil, **kwargs)
         op_sym = operation.to_sym
-        targets = resolve_target_environments(environment, mutation: MUTATION_OPERATIONS.include?(op_sym))
+        is_mutation = MUTATION_OPERATIONS.include?(op_sym)
+        targets = resolve_target_environments(environment, mutation: is_mutation)
+
+        if is_mutation
+          read_only_target = targets.find(&:read_only)
+          if read_only_target
+            raise McpForbiddenError,
+              "Environment '#{read_only_target.name}' is configured as read-only and cannot invoke '#{op_sym}'"
+          end
+        end
 
         if targets.one? && !multi_environment_request?(environment)
           execute_single(targets.first, op_sym, **kwargs)

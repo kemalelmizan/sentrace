@@ -50,10 +50,24 @@ const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "card-number",
   "cvv",
   "cvc",
-  "sentry_secret"
+  "sentry_secret",
+  "x-amz-signature",
+  "x_amz_signature",
+  "x-amz-credential",
+  "x_amz_credential",
+  "x-goog-signature",
+  "x_goog_signature",
+  "x-goog-credential",
+  "x_goog_credential",
+  "signature",
+  "credential",
+  "bearer",
+  "oauth_verifier",
+  "samlresponse",
+  "assertion"
 ];
 
-const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/;
+const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp|sig|jwt)(?:$|[_.-])/;
 
 const AUTH_SESSION_EXACT_KEYS = [
   "session",

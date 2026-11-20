@@ -26,7 +26,6 @@ module Sentrace
       ALLOWED_TOP_LEVEL_KEYS = %w[
         environment
         remote_deployment_environment
-        untrusted_telemetry_notice
         projects
         issues
         events
@@ -39,10 +38,13 @@ module Sentrace
         buckets
         next_cursor
       ].freeze
+      TELEMETRY_TOP_LEVEL_KEYS = %w[issues events issue event].freeze
+      ALLOWED_INTERVALS = %w[minute hour day].freeze
       ALLOWED_PROJECT_KEYS = %w[id slug name environment created_at].freeze
       ALLOWED_ISSUE_SUMMARY_KEYS = %w[
         id project_id environment fingerprint status level
         exception_type message first_seen_at last_seen_at event_count
+        ingestion_sources
       ].freeze
       ALLOWED_ISSUE_DETAIL_KEYS = (ALLOWED_ISSUE_SUMMARY_KEYS + %w[
         release_distribution environment_distribution recent_events
@@ -393,6 +395,38 @@ module Sentrace
           if normalized["event"].is_a?(Hash)
             normalized["event"] = sanitize_remote_hash(normalized["event"].slice(*ALLOWED_EVENT_DETAIL_KEYS))
               .merge("environment" => target_env)
+          end
+
+          if normalized.key?("next_cursor")
+            cursor = RequestSecurity.sanitize_single_line(normalized["next_cursor"], max_chars: LocalBackend::MAX_CURSOR_BYTES)
+            normalized["next_cursor"] = (cursor && !cursor.empty?) ? cursor : nil
+          end
+
+          if normalized.key?("interval")
+            clean_interval = RequestSecurity.sanitize_single_line(normalized["interval"], max_chars: 16).to_s.downcase
+            if ALLOWED_INTERVALS.include?(clean_interval)
+              normalized["interval"] = clean_interval
+            else
+              normalized.delete("interval")
+            end
+          end
+
+          %w[since until].each do |ts_key|
+            next unless normalized.key?(ts_key)
+
+            clean_ts = RequestSecurity.sanitize_single_line(normalized[ts_key], max_chars: 64)
+            normalized[ts_key] = (clean_ts && !clean_ts.empty?) ? clean_ts : nil
+          end
+
+          if normalized.key?("total_events")
+            normalized["total_events"] = [ normalized["total_events"].to_i, 0 ].max
+          end
+
+          # Never trust a remote node's untrusted_telemetry_notice string; always stamp the local notice
+          if TELEMETRY_TOP_LEVEL_KEYS.any? { |k| normalized.key?(k) }
+            normalized["untrusted_telemetry_notice"] = LocalBackend::UNTRUSTED_TELEMETRY_NOTICE
+          else
+            normalized.delete("untrusted_telemetry_notice")
           end
 
           normalized

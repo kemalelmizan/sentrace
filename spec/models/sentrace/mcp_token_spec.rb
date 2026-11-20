@@ -147,7 +147,10 @@ RSpec.describe Sentrace::McpToken do
 
       pinned_raw = "snt_mcp_99998888777766665555444433332222"
       seeded, _ = described_class.ensure!(name: "reconcile-tok", token: pinned_raw)
-      expect(seeded.scopes).to eq("read,write")
+      expect(seeded.scopes).to eq("read")
+      expect(seeded.read_only?).to be(true)
+      widened, _ = described_class.ensure!(name: "reconcile-tok", token: pinned_raw, scopes: "read,write")
+      expect(widened.reload.scopes).to eq("read,write")
       tightened, _ = described_class.ensure!(name: "reconcile-tok", token: pinned_raw, read_only: true, expires_in: 2.days)
       expect(tightened.reload.scopes).to eq("read")
       expect(tightened.expires_at).to be_present

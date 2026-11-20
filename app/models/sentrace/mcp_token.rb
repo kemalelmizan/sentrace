@@ -9,7 +9,7 @@ module Sentrace
     DUMMY_DIGEST = ("0" * 64).freeze
     ENSURED_TOKEN_FORMAT = /\Asnt_mcp_[A-Za-z0-9_-]{24,256}\z/
     ALLOWED_SCOPES = %w[read write admin].freeze
-    DEFAULT_SCOPES = "read,write".freeze
+    DEFAULT_SCOPES = "read".freeze
     READ_ONLY_SCOPES = "read".freeze
     LAST_USED_TOUCH_INTERVAL = 60
 

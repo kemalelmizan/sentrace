@@ -20,15 +20,21 @@ module Sentrace
       end
 
       class << self
-        def run(server: Server.build, input: $stdin, output: $stdout, err_output: $stderr, isolate_stdout_logs: true)
+        def run(server: nil, input: $stdin, output: $stdout, err_output: $stderr, isolate_stdout_logs: true, read_only: env_read_only?)
+          resolved_server = server || Server.build(dispatcher: Dispatcher.new(read_only: read_only))
           new(
-            server: server,
+            server: resolved_server,
             input: input,
             output: output,
             err_output: err_output,
             isolate_stdout_logs: isolate_stdout_logs
           ).run
         end
+
+        private
+          def env_read_only?
+            ENV["SENTRACE_MCP_READ_ONLY"].to_s.casecmp("true").zero?
+          end
       end
 
       def initialize(server:, input:, output:, err_output:, isolate_stdout_logs:)

@@ -5,6 +5,13 @@ module Sentrace
   class McpController < ApplicationController
     MAX_MCP_REQUEST_BYTES = 1.megabyte
 
+    # Prevent ActionController::Instrumentation#process_action from triggering Rails'
+    # unbounded body parser; StreamableHTTPTransport enforces MAX_MCP_REQUEST_BYTES directly.
+    def process_action(*)
+      request.set_header("action_dispatch.request.request_parameters", {})
+      super
+    end
+
     def handle
       config = Sentrace.configuration
 
@@ -83,7 +90,7 @@ module Sentrace
       end
 
       def rate_limit_identifier
-        request.remote_ip.to_s.strip.presence || "unknown"
+        RequestSecurity.client_ip(request).presence || "unknown"
       end
 
       def render_rate_limited(retry_after)

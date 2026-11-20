@@ -7,8 +7,16 @@ module Sentrace
     HEADER_PEEK_BYTES = 16 * 1024
     MAX_AUTH_HEADER_BYTES = 4 * 1024
     MAX_AUTH_HEADER_PAIRS = 16
+    MAX_BIGINT = (1 << 63) - 1
 
     before_action :apply_cors_headers
+
+    # Prevent ActionController::Instrumentation#process_action from triggering Rails'
+    # unbounded JSON/form/multipart request body parser before size, rate, and auth gates.
+    def process_action(*)
+      request.set_header("action_dispatch.request.request_parameters", {})
+      super
+    end
 
     def options
       head :no_content
@@ -24,14 +32,15 @@ module Sentrace
         return render json: { error: "Origin not allowed" }, status: :forbidden
       end
 
-      project_id = parse_positive_project_id(params[:project_id])
+      # Read route param directly from path_parameters to avoid triggering Rails'
+      # ActionDispatch::Http::Parameters body parser before size, rate, and auth gates.
+      project_id = parse_positive_project_id(request.path_parameters[:project_id])
 
       if config.ingestion_rate_limit_per_minute
-        client_ip = request.remote_ip.to_s.strip.presence || "unknown"
-        bucket_project = project_id || "invalid"
+        client_ip = RequestSecurity.client_ip(request, trust_forwarded_headers: config.trust_forwarded_headers).presence || "unknown"
         rate_result = RateLimiter.check!(
-          bucket: "ingestion",
-          identifier: "#{bucket_project}:#{client_ip}",
+          bucket: "ingestion_ip",
+          identifier: client_ip,
           limit: config.ingestion_rate_limit_per_minute
         )
         unless rate_result[:allowed]
@@ -64,6 +73,9 @@ module Sentrace
         unless matched_key
           return render json: { error: "Unauthorized" }, status: :unauthorized
         end
+        if project_rate_limited?(matched_key.project_id, config)
+          return
+        end
         raw_bytes = read_bounded_stream(request.body, max_size)
       else
         peek_limit = [ HEADER_PEEK_BYTES, max_size ].min
@@ -71,6 +83,9 @@ module Sentrace
         matched_key = authenticate_envelope_dsn(prefix_chunk, project_id: project_id, max_size: max_size)
         unless matched_key
           return render json: { error: "Unauthorized" }, status: :unauthorized
+        end
+        if project_rate_limited?(matched_key.project_id, config)
+          return
         end
         raw_bytes = read_remaining_bounded_stream(request.body, prefix_chunk, max_size)
       end
@@ -81,7 +96,8 @@ module Sentrace
         envelope_bytes,
         project: matched_key.project_id,
         config: config,
-        ingestion_source: "http_dsn"
+        ingestion_source: "http_dsn",
+        trusted_http_key: matched_key.secret_digest.present?
       )
 
       render json: { id: result.primary_event_id }, status: :ok
@@ -192,12 +208,31 @@ module Sentrace
         raise EnvelopeParseError, "Malformed gzip stream"
       end
 
+      def project_rate_limited?(project_id, config)
+        return false unless config.ingestion_project_rate_limit_per_minute
+
+        proj_result = RateLimiter.check!(
+          bucket: "ingestion_project",
+          identifier: project_id.to_s,
+          limit: config.ingestion_project_rate_limit_per_minute
+        )
+        return false if proj_result[:allowed]
+
+        response.set_header("Retry-After", proj_result[:retry_after].to_s)
+        render json: { error: "Rate limit exceeded" }, status: :too_many_requests
+        true
+      end
+
       def parse_positive_project_id(raw_project_id)
-        return raw_project_id if raw_project_id.is_a?(Integer) && raw_project_id.positive?
+        if raw_project_id.is_a?(Integer)
+          return raw_project_id if raw_project_id.positive? && raw_project_id <= MAX_BIGINT
+          return nil
+        end
         return nil unless raw_project_id.is_a?(String)
         return nil unless raw_project_id.match?(/\A[1-9]\d{0,18}\z/)
 
-        Integer(raw_project_id, 10)
+        parsed = Integer(raw_project_id, 10)
+        parsed <= MAX_BIGINT ? parsed : nil
       rescue ArgumentError, TypeError
         nil
       end

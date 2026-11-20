@@ -168,7 +168,9 @@ export class BrowserClient {
       this.config.maxStackFrames,
       meta.handled,
       meta.mechanismType,
-      syntheticException
+      syntheticException,
+      this.redactFields,
+      this.allowFields
     );
 
     if (meta.fallbackFrame && values.length > 0) {

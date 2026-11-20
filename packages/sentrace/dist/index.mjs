@@ -50,10 +50,24 @@ const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "card-number",
   "cvv",
   "cvc",
-  "sentry_secret"
+  "sentry_secret",
+  "x-amz-signature",
+  "x_amz_signature",
+  "x-amz-credential",
+  "x_amz_credential",
+  "x-goog-signature",
+  "x_goog_signature",
+  "x-goog-credential",
+  "x_goog_credential",
+  "signature",
+  "credential",
+  "bearer",
+  "oauth_verifier",
+  "samlresponse",
+  "assertion"
 ];
 
-const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/;
+const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp|sig|jwt)(?:$|[_.-])/;
 
 const AUTH_SESSION_EXACT_KEYS = [
   "session",
@@ -318,19 +332,27 @@ function extractLineColSuffix(text        )                                     
   };
 }
 
-function sanitizeFrameFilename(rawFilename        )         {
+function sanitizeFrameFilename(
+  rawFilename        ,
+  redactFields           = [],
+  allowFields           = []
+)         {
   if (
     /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(rawFilename) ||
     rawFilename.indexOf("?") !== -1 ||
     rawFilename.indexOf("#") !== -1
   ) {
-    const scrubbed = scrubUrl(rawFilename);
+    const scrubbed = scrubUrl(rawFilename, redactFields, allowFields);
     return scrubbed || rawFilename;
   }
   return rawFilename;
 }
 
-function parseStackLine(line        )                    {
+function parseStackLine(
+  line        ,
+  redactFields           = [],
+  allowFields           = []
+)                    {
   if (!line || line.length > MAX_STACK_LINE_CHARS) {
     return null;
   }
@@ -360,7 +382,7 @@ function parseStackLine(line        )                    {
       }
       const parsedParen = extractLineColSuffix(locPart);
       if (parsedParen) {
-        const cleanFile = sanitizeFrameFilename(parsedParen.file);
+        const cleanFile = sanitizeFrameFilename(parsedParen.file, redactFields, allowFields);
         return {
           filename: cleanFile,
           function: cleanFunctionName(fnRaw),
@@ -373,7 +395,7 @@ function parseStackLine(line        )                    {
 
     const parsedBare = extractLineColSuffix(rest);
     if (parsedBare) {
-      const cleanBareFile = sanitizeFrameFilename(parsedBare.file);
+      const cleanBareFile = sanitizeFrameFilename(parsedBare.file, redactFields, allowFields);
       return {
         filename: cleanBareFile,
         function: "?",
@@ -394,7 +416,7 @@ function parseStackLine(line        )                    {
     parsedGecko &&
     (parsedGecko.file.includes("/") || parsedGecko.file.includes(".") || parsedGecko.file.startsWith("http"))
   ) {
-    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file);
+    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file, redactFields, allowFields);
     return {
       filename: cleanGeckoFile,
       function: cleanFunctionName(fnPart),
@@ -411,7 +433,12 @@ function parseStackLine(line        )                    {
  * Parses JavaScript Error.stack strings (V8, Firefox, Safari) into Sentry v7 stack frames
  * ordered from oldest caller frame to newest crash site frame.
  */
-function parseStackFrames(stack                    , maxFrames = 50)               {
+function parseStackFrames(
+  stack                    ,
+  maxFrames = 50,
+  redactFields           = [],
+  allowFields           = []
+)               {
   if (!stack || typeof stack !== "string") {
     return [];
   }
@@ -420,7 +447,7 @@ function parseStackFrames(stack                    , maxFrames = 50)            
   const rawLines = stack.split(/\r?\n/);
   const scanLimit = Math.min(rawLines.length, MAX_STACK_LINES_SCANNED);
   for (let i = 0; i < scanLimit; i += 1) {
-    const frame = parseStackLine(rawLines[i] );
+    const frame = parseStackLine(rawLines[i] , redactFields, allowFields);
     if (frame) {
       newestFirst.push(frame);
     }
@@ -437,10 +464,12 @@ function normalizeSingleError(
   err         ,
   maxFrames        ,
   handled         ,
-  mechanismType
+  mechanismType        ,
+  redactFields          ,
+  allowFields
 )                       {
   if (err instanceof Error) {
-    const frames = parseStackFrames(err.stack, maxFrames);
+    const frames = parseStackFrames(err.stack, maxFrames, redactFields, allowFields);
     const ctorName = err.constructor && typeof err.constructor.name === "string" ? err.constructor.name : "";
     return {
       type: err.name || ctorName || "Error",
@@ -465,7 +494,7 @@ function normalizeSingleError(
               return String(obj);
             }
           })();
-    const frames = typeof obj.stack === "string" ? parseStackFrames(obj.stack, maxFrames) : [];
+    const frames = typeof obj.stack === "string" ? parseStackFrames(obj.stack, maxFrames, redactFields, allowFields) : [];
     return {
       type: typeName,
       value: message,
@@ -490,7 +519,9 @@ function extractExceptionChain(
   maxFrames = 50,
   handled = true,
   mechanismType = "generic",
-  syntheticException
+  syntheticException        ,
+  redactFields           = [],
+  allowFields           = []
 )                         {
   const chain                         = [];
   const seen = new Set         ();
@@ -499,9 +530,9 @@ function extractExceptionChain(
 
   while (current !== undefined && current !== null && depth < 5 && !seen.has(current)) {
     seen.add(current);
-    const entry = normalizeSingleError(current, maxFrames, handled, mechanismType);
+    const entry = normalizeSingleError(current, maxFrames, handled, mechanismType, redactFields, allowFields);
     if (depth === 0 && !entry.stacktrace && syntheticException && syntheticException.stack) {
-      const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames);
+      const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames, redactFields, allowFields);
       if (fallbackFrames.length > 0) {
         entry.stacktrace = { frames: fallbackFrames };
       }
@@ -517,7 +548,7 @@ function extractExceptionChain(
   }
 
   if (chain.length === 0) {
-    chain.push(normalizeSingleError(error, maxFrames, handled, mechanismType));
+    chain.push(normalizeSingleError(error, maxFrames, handled, mechanismType, redactFields, allowFields));
   }
 
   return chain.reverse();
@@ -968,14 +999,22 @@ function installBrowserInstrumentation(hooks                             )      
       const ev = rawEvent
 
                    ;
-      const err =
-        ev && ev.error !== undefined && ev.error !== null
-          ? ev.error
-          : new Error((ev && ev.message) || "Uncaught window error");
+      let err         ;
+      if (ev && ev.error !== undefined && ev.error !== null) {
+        err = ev.error;
+      } else {
+        const syntheticErr = new Error((ev && ev.message) || "Uncaught window error");
+        if (ev && ev.filename) {
+          syntheticErr.stack = "";
+        }
+        err = syntheticErr;
+      }
+      const safeErrorFilename =
+        ev && ev.filename ? scrubUrl(ev.filename, hooks.redactFields, hooks.allowFields) || ev.filename : undefined;
       const fallbackFrame                         =
-        ev && ev.filename
+        safeErrorFilename
           ? {
-            filename: ev.filename,
+            filename: safeErrorFilename,
             function: "?",
             lineno: typeof ev.lineno === "number" ? ev.lineno : undefined,
             colno: typeof ev.colno === "number" ? ev.colno : undefined,
@@ -1680,7 +1719,9 @@ class BrowserClient {
       this.config.maxStackFrames,
       meta.handled,
       meta.mechanismType,
-      syntheticException
+      syntheticException,
+      this.redactFields,
+      this.allowFields
     );
 
     if (meta.fallbackFrame && values.length > 0) {

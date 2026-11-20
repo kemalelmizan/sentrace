@@ -70,19 +70,27 @@ function extractLineColSuffix(text: string): { file: string; lineno: number; col
   };
 }
 
-function sanitizeFrameFilename(rawFilename: string): string {
+function sanitizeFrameFilename(
+  rawFilename: string,
+  redactFields: string[] = [],
+  allowFields: string[] = []
+): string {
   if (
     /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(rawFilename) ||
     rawFilename.indexOf("?") !== -1 ||
     rawFilename.indexOf("#") !== -1
   ) {
-    const scrubbed = scrubUrl(rawFilename);
+    const scrubbed = scrubUrl(rawFilename, redactFields, allowFields);
     return scrubbed || rawFilename;
   }
   return rawFilename;
 }
 
-export function parseStackLine(line: string): StackFrame | null {
+export function parseStackLine(
+  line: string,
+  redactFields: string[] = [],
+  allowFields: string[] = []
+): StackFrame | null {
   if (!line || line.length > MAX_STACK_LINE_CHARS) {
     return null;
   }
@@ -112,7 +120,7 @@ export function parseStackLine(line: string): StackFrame | null {
       }
       const parsedParen = extractLineColSuffix(locPart);
       if (parsedParen) {
-        const cleanFile = sanitizeFrameFilename(parsedParen.file);
+        const cleanFile = sanitizeFrameFilename(parsedParen.file, redactFields, allowFields);
         return {
           filename: cleanFile,
           function: cleanFunctionName(fnRaw),
@@ -125,7 +133,7 @@ export function parseStackLine(line: string): StackFrame | null {
 
     const parsedBare = extractLineColSuffix(rest);
     if (parsedBare) {
-      const cleanBareFile = sanitizeFrameFilename(parsedBare.file);
+      const cleanBareFile = sanitizeFrameFilename(parsedBare.file, redactFields, allowFields);
       return {
         filename: cleanBareFile,
         function: "?",
@@ -146,7 +154,7 @@ export function parseStackLine(line: string): StackFrame | null {
     parsedGecko &&
     (parsedGecko.file.includes("/") || parsedGecko.file.includes(".") || parsedGecko.file.startsWith("http"))
   ) {
-    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file);
+    const cleanGeckoFile = sanitizeFrameFilename(parsedGecko.file, redactFields, allowFields);
     return {
       filename: cleanGeckoFile,
       function: cleanFunctionName(fnPart),
@@ -163,7 +171,12 @@ export function parseStackLine(line: string): StackFrame | null {
  * Parses JavaScript Error.stack strings (V8, Firefox, Safari) into Sentry v7 stack frames
  * ordered from oldest caller frame to newest crash site frame.
  */
-export function parseStackFrames(stack: string | undefined, maxFrames = 50): StackFrame[] {
+export function parseStackFrames(
+  stack: string | undefined,
+  maxFrames = 50,
+  redactFields: string[] = [],
+  allowFields: string[] = []
+): StackFrame[] {
   if (!stack || typeof stack !== "string") {
     return [];
   }
@@ -172,7 +185,7 @@ export function parseStackFrames(stack: string | undefined, maxFrames = 50): Sta
   const rawLines = stack.split(/\r?\n/);
   const scanLimit = Math.min(rawLines.length, MAX_STACK_LINES_SCANNED);
   for (let i = 0; i < scanLimit; i += 1) {
-    const frame = parseStackLine(rawLines[i]!);
+    const frame = parseStackLine(rawLines[i]!, redactFields, allowFields);
     if (frame) {
       newestFirst.push(frame);
     }
@@ -189,10 +202,12 @@ function normalizeSingleError(
   err: unknown,
   maxFrames: number,
   handled: boolean,
-  mechanismType: string
+  mechanismType: string,
+  redactFields: string[],
+  allowFields: string[]
 ): SentryExceptionValue {
   if (err instanceof Error) {
-    const frames = parseStackFrames(err.stack, maxFrames);
+    const frames = parseStackFrames(err.stack, maxFrames, redactFields, allowFields);
     const ctorName = err.constructor && typeof err.constructor.name === "string" ? err.constructor.name : "";
     return {
       type: err.name || ctorName || "Error",
@@ -217,7 +232,7 @@ function normalizeSingleError(
               return String(obj);
             }
           })();
-    const frames = typeof obj.stack === "string" ? parseStackFrames(obj.stack, maxFrames) : [];
+    const frames = typeof obj.stack === "string" ? parseStackFrames(obj.stack, maxFrames, redactFields, allowFields) : [];
     return {
       type: typeName,
       value: message,
@@ -242,7 +257,9 @@ export function extractExceptionChain(
   maxFrames = 50,
   handled = true,
   mechanismType = "generic",
-  syntheticException?: Error
+  syntheticException?: Error,
+  redactFields: string[] = [],
+  allowFields: string[] = []
 ): SentryExceptionValue[] {
   const chain: SentryExceptionValue[] = [];
   const seen = new Set<unknown>();
@@ -251,9 +268,9 @@ export function extractExceptionChain(
 
   while (current !== undefined && current !== null && depth < 5 && !seen.has(current)) {
     seen.add(current);
-    const entry = normalizeSingleError(current, maxFrames, handled, mechanismType);
+    const entry = normalizeSingleError(current, maxFrames, handled, mechanismType, redactFields, allowFields);
     if (depth === 0 && !entry.stacktrace && syntheticException && syntheticException.stack) {
-      const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames);
+      const fallbackFrames = parseStackFrames(syntheticException.stack, maxFrames, redactFields, allowFields);
       if (fallbackFrames.length > 0) {
         entry.stacktrace = { frames: fallbackFrames };
       }
@@ -269,7 +286,7 @@ export function extractExceptionChain(
   }
 
   if (chain.length === 0) {
-    chain.push(normalizeSingleError(error, maxFrames, handled, mechanismType));
+    chain.push(normalizeSingleError(error, maxFrames, handled, mechanismType, redactFields, allowFields));
   }
 
   return chain.reverse();

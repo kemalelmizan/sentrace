@@ -47,7 +47,7 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
     "/calibrations?calibration_session_id=42&promotion_calibration_session_id=99&session_id=[REDACTED]&_myapp_session=[REDACTED]&user_session_token=[REDACTED]&TOKEN_PRESENT=1&access_token=[REDACTED]"
   );
 
-  // Strip OAuth / SPA #hash fragments from both absolute and relative URLs
+  // Strip OAuth / SPA #hash fragments and cloud signed-URL parameters
   assert.equal(
     scrubUrl("https://shop.example.com/auth/callback?ok=1#access_token=opaque_oauth_secret&id_token=jwt_secret"),
     "https://shop.example.com/auth/callback?ok=1"
@@ -56,16 +56,20 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
     scrubUrl("/auth/callback?state=xyz#access_token=opaque_oauth_secret"),
     "/auth/callback?state=xyz"
   );
+  assert.equal(
+    scrubUrl("https://storage.example.com/file.pdf?X-Amz-Signature=amz123&X-Goog-Signature=gcp456&sig=s789&jwt=j000&v=1"),
+    "https://storage.example.com/file.pdf?X-Amz-Signature=[REDACTED]&X-Goog-Signature=[REDACTED]&sig=[REDACTED]&jwt=[REDACTED]&v=1"
+  );
 });
 
 test("parseStackFrames scrubs frame URL secrets and resists quadratic backtracking on pathological inputs", () => {
   const secretFrameStack = [
     "Error: Script failure",
-    "    at loadWidget (https://app.example.com/embed.js?api_key=leak_me&v=2#access_token=hash_leak:14:9)"
+    "    at loadWidget (https://app.example.com/embed.js?api_key=leak_me&custom_pin=9999&v=2#access_token=hash_leak:14:9)"
   ].join("\n");
-  const scrubbedFrames = parseStackFrames(secretFrameStack);
+  const scrubbedFrames = parseStackFrames(secretFrameStack, 50, ["custom_pin"]);
   assert.equal(scrubbedFrames.length, 1);
-  assert.equal(scrubbedFrames[0].filename, "https://app.example.com/embed.js?api_key=[REDACTED]&v=2");
+  assert.equal(scrubbedFrames[0].filename, "https://app.example.com/embed.js?api_key=[REDACTED]&custom_pin=[REDACTED]&v=2");
   assert.equal(scrubbedFrames[0].lineno, 14);
   assert.equal(scrubbedFrames[0].colno, 9);
 

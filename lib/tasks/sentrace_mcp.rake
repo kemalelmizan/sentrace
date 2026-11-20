@@ -11,12 +11,16 @@ namespace :sentrace do
     end
 
     namespace :tokens do
-      desc "Issue a new Sentrace MCP bearer token (stored as SHA-256 digest)"
+      desc "Issue a new Sentrace MCP bearer token (read-only by default; pass WRITE=true, ADMIN=true, or SCOPES=...)"
       task :create, [ :name ] => :environment do |_task, args|
         read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        write_flag = ENV["WRITE"].to_s.casecmp("true").zero?
         admin_flag = ENV["ADMIN"].to_s.casecmp("true").zero?
         scopes = ENV["SCOPES"]&.strip
-        scopes = "read,write,admin" if (scopes.nil? || scopes.empty?) && admin_flag && !read_only
+        if (scopes.nil? || scopes.empty?) && !read_only
+          scopes = "read,write,admin" if admin_flag
+          scopes ||= "read,write" if write_flag
+        end
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
 
@@ -33,9 +37,13 @@ namespace :sentrace do
       desc "Rotate active Sentrace MCP bearer token(s) for a given name"
       task :rotate, [ :name ] => :environment do |_task, args|
         read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        write_flag = ENV["WRITE"].to_s.casecmp("true").zero?
         admin_flag = ENV["ADMIN"].to_s.casecmp("true").zero?
         scopes = ENV["SCOPES"]&.strip
-        scopes = "read,write,admin" if (scopes.nil? || scopes.empty?) && admin_flag && !read_only
+        if (scopes.nil? || scopes.empty?) && !read_only
+          scopes = "read,write,admin" if admin_flag
+          scopes ||= "read,write" if write_flag
+        end
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
 

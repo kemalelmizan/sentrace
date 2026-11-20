@@ -29,6 +29,8 @@ RSpec.describe "sentrace:mcp:tokens Rake tasks" do
     end
 
     token = Sentrace::McpToken.find_by!(name: "staging")
+    expect(token.scopes).to eq("read")
+    expect(token.read_only?).to be(true)
     raw_match = create_output.match(/Token:\s+(snt_mcp_[0-9a-f]{48})/)
     expect(raw_match).to be_present
     raw_token = raw_match[1]

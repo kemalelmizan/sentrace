@@ -386,7 +386,7 @@ module Sentrace
             PROMPT
 
             ::MCP::Prompt::Result.new(
-              description: "Investigate Sentrace issue ##{issue_id}",
+              description: "Investigate Sentrace issue ##{safe_issue_label}",
               messages: [
                 ::MCP::Prompt::Message.new(
                   role: "user",

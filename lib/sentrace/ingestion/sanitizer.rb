@@ -55,9 +55,34 @@ module Sentrace
         client-ip
         x_forwarded_for
         x-forwarded-for
+        x-amz-signature
+        x_amz_signature
+        x-amz-credential
+        x_amz_credential
+        x-goog-signature
+        x_goog_signature
+        x-goog-credential
+        x_goog_credential
+        signature
+        credential
+        bearer
+        oauth_verifier
+        samlresponse
+        assertion
       ].freeze
 
-      SENSITIVE_BOUNDED_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp)(?:$|[_.-])/
+      SENSITIVE_BOUNDED_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp|sig|jwt)(?:$|[_.-])/
+
+      ALLOWED_EVENT_DATA_KEYS = %w[
+        ingestion_source
+        exception
+        message
+        request
+        breadcrumbs
+        tags
+        contexts
+        user
+      ].freeze
 
       AUTH_SESSION_EXACT_KEYS = %w[
         session
@@ -83,11 +108,14 @@ module Sentrace
       PEM_FOOTER_REGEX = /-----END [A-Z0-9 ]{0,32}PRIVATE KEY-----/
       BEARER_HEADER_REGEX = /\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i
       BASIC_AUTH_HEADER_REGEX = /\bBasic\s+[A-Za-z0-9+\/]{8,}={0,2}/i
+      INLINE_SENSITIVE_HEADER_REGEX = /\b(Cookie|Set-Cookie|X-Api-Key|X-Auth-Token)\s*:\s*[^\r\n]+/i
       URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@]*:[^/\s@]*(@)}i
+      SINGLE_URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@:]{6,256}(@)}i
       TRUNCATED_URI_USERINFO_REGEX = %r{\b([a-z][a-z0-9+.-]*://)[^/\s@]{1,128}:[^/\s@]{1,256}\z}i
+      INLINE_HTTP_URL_REGEX = %r{\bhttps?://[^\s"'<>)\]]+\?[^\s"'<>)\]]+}i
       RAW_JWT_REGEX = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/
       TRUNCATED_JWT_REGEX = /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]*)?\z/
-      KNOWN_SECRET_TOKEN_REGEX = /\b(?:snt_mcp_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{32,}|ya29\.[0-9A-Za-z_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b/
+      KNOWN_SECRET_TOKEN_REGEX = /\b(?:snt_mcp_[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{48}|AIza[0-9A-Za-z_-]{32,}|ya29\.[0-9A-Za-z_-]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{16,}|npm_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,})\b/
       PAN_CANDIDATE_REGEX = /\b(?:\d[ -]*?){13,19}\b/
 
       class << self
@@ -99,6 +127,14 @@ module Sentrace
           new(config: config).sanitize_url(raw_url, raw_query_string)
         end
 
+        def redact_structure_to_string(value, config: Sentrace.configuration)
+          sanitizer = new(config: config)
+          scrubbed = sanitizer.send(:scrub_value_bounded, value, depth: 0)
+          JSON.generate(scrubbed)
+        rescue JSON::GeneratorError
+          REDACTED
+        end
+
         def redact_inline_secrets(raw_text)
           return raw_text unless raw_text.is_a?(String) && !raw_text.empty?
 
@@ -106,7 +142,9 @@ module Sentrace
           cleaned = cleaned
             .gsub(BEARER_HEADER_REGEX, "Bearer #{REDACTED}")
             .gsub(BASIC_AUTH_HEADER_REGEX, "Basic #{REDACTED}")
+            .gsub(INLINE_SENSITIVE_HEADER_REGEX, "\\1: #{REDACTED}")
             .gsub(URI_USERINFO_REGEX, "\\1#{REDACTED}\\2")
+            .gsub(SINGLE_URI_USERINFO_REGEX, "\\1#{REDACTED}\\2")
             .gsub(TRUNCATED_URI_USERINFO_REGEX, "\\1#{REDACTED}")
             .gsub(RAW_JWT_REGEX, REDACTED)
             .gsub(TRUNCATED_JWT_REGEX, REDACTED)
@@ -271,7 +309,7 @@ module Sentrace
           scrubbed_pairs = decoded_pairs.map do |k, v|
             bounded_k = EventNormalizer.truncate_utf8_bytes(k.to_s, 128).to_s
             bounded_v = EventNormalizer.truncate_utf8_bytes(v.to_s, 1024).to_s
-            [ bounded_k, sensitive_key?(bounded_k) ? REDACTED : scrub_text(bounded_v) ]
+            [ bounded_k, sensitive_key?(bounded_k) ? REDACTED : scrub_text(bounded_v, scrub_urls: false) ]
           end
           uri.query = URI.encode_www_form(scrubbed_pairs)
         else
@@ -282,7 +320,7 @@ module Sentrace
       rescue URI::InvalidURIError, ArgumentError
         # Strip query string, fragment, and credentials if URL could not be cleanly parsed
         fallback = bounded_url.to_s.split(/[?#]/).first.to_s.sub(%r{//[^/@]+@}, "//")
-        EventNormalizer.truncate_utf8_bytes(scrub_text(fallback), 1024)
+        EventNormalizer.truncate_utf8_bytes(scrub_text(fallback, scrub_urls: false), 1024)
       end
 
       private
@@ -470,6 +508,34 @@ module Sentrace
           AUTH_SESSION_EXACT_KEYS.include?(downcased) || AUTH_SESSION_KEY_REGEX.match?(downcased)
         end
 
+        def scrub_value_bounded(val, depth:)
+          return "[TRUNCATED]" if depth > 3
+
+          case val
+          when Hash
+            val.first(16).each_with_object({}) do |(k, v), acc|
+              key_str = k.to_s
+              downcased = key_str.strip.downcase
+              next if FORBIDDEN_CONTEXT_KEYS.include?(downcased) && !@allow_fields.key?(downcased)
+
+              acc[key_str] =
+                if sensitive_key?(key_str)
+                  REDACTED
+                elsif URL_VALUE_KEYS.include?(downcased) && v.is_a?(String)
+                  sanitize_url_or_text(v)
+                else
+                  scrub_value_bounded(v, depth: depth + 1)
+                end
+            end
+          when Array
+            val.first(16).map { |item| scrub_value_bounded(item, depth: depth + 1) }
+          when String
+            scrub_text(val)
+          else
+            val
+          end
+        end
+
         def scrub_single_line(text, max_chars)
           return nil if text.nil?
 
@@ -479,38 +545,58 @@ module Sentrace
           ).to_s.strip
           return nil if cleaned.empty?
 
-          redacted = self.class.redact_inline_secrets(cleaned)
+          redacted = scrub_inline_urls_and_secrets(cleaned, scrub_urls: true)
           redacted.length > max_chars ? redacted[0, max_chars] : redacted
         end
 
-        def scrub_text(text)
+        def scrub_text(text, scrub_urls: true)
           return text unless text.is_a?(String)
 
           bounded = EventNormalizer.truncate_utf8_bytes(text, [ @config.max_message_bytes.to_i, MAX_PRE_SCRUB_BYTES ].max)
           cleaned = EventNormalizer.strip_unsafe_characters(bounded, allow_newlines: true)
+          scrub_inline_urls_and_secrets(cleaned, scrub_urls: scrub_urls)
+        end
+
+        def scrub_inline_urls_and_secrets(cleaned, scrub_urls:)
+          if scrub_urls && cleaned.include?("://") && cleaned.include?("?")
+            cleaned = cleaned.gsub(INLINE_HTTP_URL_REGEX) do |matched_url|
+              sanitize_url(matched_url) || matched_url
+            end
+          end
           self.class.redact_inline_secrets(cleaned)
         end
 
         def enforce_post_sanitizer_bounds(data)
-          bounded = data.dup
+          bounded = data.slice(*ALLOWED_EVENT_DATA_KEYS)
           if bounded["message"].is_a?(String)
-            cleaned_msg = EventNormalizer.strip_unsafe_characters(bounded["message"], allow_newlines: true)
+            cleaned_msg = scrub_text(bounded["message"])
             bounded["message"] = EventNormalizer.truncate_utf8_bytes(cleaned_msg, @config.max_message_bytes)
           end
 
+          if bounded["request"].is_a?(Hash)
+            bounded["request"] = sanitize_request(bounded["request"])
+          end
+
           if bounded["tags"].is_a?(Hash)
-            bounded["tags"] = bounded["tags"].first(@config.max_tags).to_h do |k, v|
+            bounded["tags"] = bounded["tags"].first(@config.max_tags).each_with_object({}) do |(k, v), acc|
               clean_k = EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false)
-              clean_v = v.nil? ? nil : EventNormalizer.strip_unsafe_characters(v.to_s, allow_newlines: false)
-              [
-                EventNormalizer.truncate_utf8_bytes(clean_k, @config.max_tag_key_bytes),
-                clean_v.nil? ? nil : EventNormalizer.truncate_utf8_bytes(clean_v, @config.max_tag_value_bytes)
-              ]
+              bounded_k = EventNormalizer.truncate_utf8_bytes(clean_k, @config.max_tag_key_bytes)
+              next if bounded_k.nil? || bounded_k.empty?
+
+              if sensitive_key?(bounded_k)
+                acc[bounded_k] = REDACTED
+              elsif v.nil?
+                acc[bounded_k] = nil
+              else
+                clean_v = EventNormalizer.strip_unsafe_characters(v.to_s, allow_newlines: false)
+                redacted_v = scrub_inline_urls_and_secrets(clean_v, scrub_urls: true)
+                acc[bounded_k] = EventNormalizer.truncate_utf8_bytes(redacted_v, @config.max_tag_value_bytes)
+              end
             end
           end
 
           if bounded["breadcrumbs"].is_a?(Array)
-            bounded["breadcrumbs"] = bounded["breadcrumbs"].last(@config.max_breadcrumbs)
+            bounded["breadcrumbs"] = scrub_breadcrumbs(bounded["breadcrumbs"].last(@config.max_breadcrumbs))
           end
 
           if bounded["user"].is_a?(Hash)
@@ -540,7 +626,7 @@ module Sentrace
               exc["type"] = scrub_single_line(exc["type"], 255)
             end
             if exc["value"].is_a?(String)
-              clean_val = EventNormalizer.strip_unsafe_characters(exc["value"], allow_newlines: true)
+              clean_val = scrub_text(exc["value"])
               exc["value"] = EventNormalizer.truncate_utf8_bytes(clean_val, @config.max_message_bytes)
             end
             if exc["frames"].is_a?(Array)
@@ -551,19 +637,31 @@ module Sentrace
 
           if bounded["contexts"].is_a?(Hash)
             kept = {}
-            bounded["contexts"].each do |k, v|
-              break if kept.size >= @config.max_context_entries
+            max_bytes = @config.max_context_bytes
+            max_scan = [ @config.max_context_entries * 2, 64 ].max
+            scanned = 0
+            total_bytes = 2 # "{}"
 
+            bounded["contexts"].each do |k, v|
+              break if kept.size >= @config.max_context_entries || scanned >= max_scan
+              break if (max_bytes - total_bytes) < 8
+
+              scanned += 1
               key_str = EventNormalizer.truncate_utf8_bytes(
                 EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false),
                 64
               )
-              next if key_str.nil? || key_str.empty?
+              next if key_str.nil? || key_str.empty? || kept.key?(key_str)
               next if FORBIDDEN_CONTEXT_KEYS.include?(key_str.strip.downcase)
               next unless v.is_a?(Hash)
 
-              candidate = kept.merge(key_str => bound_post_sanitizer_value(v, depth: 0))
-              kept = candidate if JSON.generate(candidate).bytesize <= @config.max_context_bytes
+              bounded_val = bound_post_sanitizer_value(v, depth: 0)
+              entry_bytes = JSON.generate(key_str => bounded_val).bytesize - 2
+              separator_bytes = kept.empty? ? 0 : 1
+              if (total_bytes + separator_bytes + entry_bytes) <= max_bytes
+                kept[key_str] = bounded_val
+                total_bytes += separator_bytes + entry_bytes
+              end
             end
             bounded["contexts"] = kept
           end
@@ -576,16 +674,20 @@ module Sentrace
 
           case value
           when Hash
-            value.first(16).to_h do |k, v|
+            value.first(16).each_with_object({}) do |(k, v), acc|
               clean_k = EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false)
-              [ EventNormalizer.truncate_utf8_bytes(clean_k, 64), bound_post_sanitizer_value(v, depth: depth + 1) ]
+              bounded_k = EventNormalizer.truncate_utf8_bytes(clean_k, 64)
+              downcased = bounded_k.to_s.strip.downcase
+              next if FORBIDDEN_CONTEXT_KEYS.include?(downcased) && !@allow_fields.key?(downcased)
+
+              acc[bounded_k] = sensitive_key?(bounded_k) ? REDACTED : bound_post_sanitizer_value(v, depth: depth + 1)
             end
           when Array
             value.first(16).map { |v| bound_post_sanitizer_value(v, depth: depth + 1) }
           when Numeric, TrueClass, FalseClass, NilClass
             value
           else
-            clean_str = EventNormalizer.strip_unsafe_characters(value.to_s, allow_newlines: true)
+            clean_str = scrub_text(value.to_s)
             EventNormalizer.truncate_utf8_bytes(clean_str, 512)
           end
         end

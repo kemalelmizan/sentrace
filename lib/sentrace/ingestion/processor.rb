@@ -9,13 +9,15 @@ module Sentrace
           project:,
           received_at: Time.current,
           config: Sentrace.configuration,
-          ingestion_source: "http_dsn"
+          ingestion_source: "http_dsn",
+          trusted_http_key: false
         )
           new(config: config).process_raw_envelope(
             raw_body,
             project: project,
             received_at: received_at,
-            ingestion_source: ingestion_source
+            ingestion_source: ingestion_source,
+            trusted_http_key: trusted_http_key
           )
         end
 
@@ -25,14 +27,16 @@ module Sentrace
           envelope_headers: {},
           received_at: Time.current,
           config: Sentrace.configuration,
-          ingestion_source: "in_process"
+          ingestion_source: "in_process",
+          trusted_http_key: false
         )
           new(config: config).ingest_event(
             raw_event,
             project: project,
             envelope_headers: envelope_headers,
             received_at: received_at,
-            ingestion_source: ingestion_source
+            ingestion_source: ingestion_source,
+            trusted_http_key: trusted_http_key
           )
         end
       end
@@ -41,7 +45,7 @@ module Sentrace
         @config = config
       end
 
-      def process_raw_envelope(raw_body, project:, received_at: Time.current, ingestion_source: "http_dsn")
+      def process_raw_envelope(raw_body, project:, received_at: Time.current, ingestion_source: "http_dsn", trusted_http_key: false)
         parsed = EnvelopeParser.parse(
           raw_body,
           max_items: @config.max_envelope_items,
@@ -56,7 +60,8 @@ module Sentrace
             project: project,
             envelope_headers: parsed.headers,
             received_at: received_at,
-            ingestion_source: ingestion_source
+            ingestion_source: ingestion_source,
+            trusted_http_key: trusted_http_key
           )
           if result.duplicate
             duplicate_ids << result.event_id
@@ -75,7 +80,7 @@ module Sentrace
         )
       end
 
-      def ingest_event(raw_event, project:, envelope_headers: {}, received_at: Time.current, ingestion_source: "in_process")
+      def ingest_event(raw_event, project:, envelope_headers: {}, received_at: Time.current, ingestion_source: "in_process", trusted_http_key: false)
         project_id = project.is_a?(Integer) ? project : project.id
         normalized = EventNormalizer.normalize(
           raw_event,
@@ -96,7 +101,10 @@ module Sentrace
         end
 
         sanitized = Sanitizer.sanitize(normalized, project_id: project_id, config: @config)
-        fingerprint = Issues::Fingerprint.compute(sanitized)
+        # Domain-separate public-key-only http_dsn fingerprints so untrusted browser callers
+        # can never collide with, overwrite, or reopen trusted in_process backend issues.
+        trust_domain = (sanitized.event_data["ingestion_source"] == "http_dsn" && !trusted_http_key) ? "http_dsn" : nil
+        fingerprint = Issues::Fingerprint.compute(sanitized, trust_domain)
 
         Issues::Grouper.persist!(
           project_id: project_id,

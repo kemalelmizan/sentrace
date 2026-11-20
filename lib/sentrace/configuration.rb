@@ -40,6 +40,7 @@ module Sentrace
     DEFAULT_MAX_EVENTS_PER_ENVELOPE = 10
     DEFAULT_MAX_ENVELOPE_ITEMS = 50
     DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE = 300
+    DEFAULT_INGESTION_PROJECT_RATE_LIMIT_PER_MINUTE = 3_000
     DEFAULT_MAX_FUTURE_CLOCK_SKEW = 5.minutes
 
     POSITIVE_NUMERIC_ATTRIBUTES = %i[
@@ -65,10 +66,14 @@ module Sentrace
       max_envelope_items
     ].freeze
 
-    EnvironmentDefinition = Data.define(:name, :transport, :url, :token, :timeout) do
+    EnvironmentDefinition = Data.define(:name, :transport, :url, :token, :timeout, :read_only) do
+      def initialize(name:, transport:, url: nil, token: nil, timeout: nil, read_only: false)
+        super
+      end
+
       def inspect
         masked_token = token ? "[REDACTED]" : "nil"
-        "#<#{self.class.name} name=#{name.inspect} transport=#{transport.inspect} url=#{url.inspect} token=#{masked_token} timeout=#{timeout.inspect}>"
+        "#<#{self.class.name} name=#{name.inspect} transport=#{transport.inspect} url=#{url.inspect} token=#{masked_token} timeout=#{timeout.inspect} read_only=#{read_only.inspect}>"
       end
       alias_method :to_s, :inspect
     end
@@ -85,6 +90,7 @@ module Sentrace
       :capture_dispatch,
       :frontend_dsn,
       :public_base_url,
+      :allow_request_base_url_fallback,
       :release,
       :cors_allowed_origins,
       :retention_period,
@@ -107,11 +113,13 @@ module Sentrace
       :retain_user_fields,
       :sanitizer,
       :internal_authenticator,
+      :trust_forwarded_headers,
       :mcp_allowed_ips,
       :internal_allowed_ips,
       :mcp_rate_limit_per_minute,
       :mcp_auth_failure_limit_per_minute,
       :ingestion_rate_limit_per_minute,
+      :ingestion_project_rate_limit_per_minute,
       :user_hash_secret,
       :remote_timeout,
       :remote_ping_timeout
@@ -133,6 +141,7 @@ module Sentrace
       @capture_dispatch = :async
       @frontend_dsn = nil
       @public_base_url = nil
+      @allow_request_base_url_fallback = true
       @release = ENV["APP_RELEASE"]
       @cors_allowed_origins = []
       @retention_period = 30.days
@@ -155,11 +164,13 @@ module Sentrace
       @retain_user_fields = []
       @sanitizer = nil
       @internal_authenticator = nil
+      @trust_forwarded_headers = true
       @mcp_allowed_ips = []
       @internal_allowed_ips = []
       @mcp_rate_limit_per_minute = 120
       @mcp_auth_failure_limit_per_minute = 20
       @ingestion_rate_limit_per_minute = DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE
+      @ingestion_project_rate_limit_per_minute = DEFAULT_INGESTION_PROJECT_RATE_LIMIT_PER_MINUTE
       @user_hash_secret = nil
       @remote_timeout = 5.0
       @remote_ping_timeout = 2.5
@@ -198,7 +209,8 @@ module Sentrace
           transport: transport,
           url: opts[:url],
           token: opts[:token],
-          timeout: opts.fetch(:timeout, @remote_timeout)
+          timeout: opts.fetch(:timeout, @remote_timeout),
+          read_only: opts.fetch(:read_only, false)
         )
       end
     end
@@ -247,6 +259,9 @@ module Sentrace
       validate_optional_positive_integer!(:mcp_rate_limit_per_minute, mcp_rate_limit_per_minute)
       validate_optional_positive_integer!(:mcp_auth_failure_limit_per_minute, mcp_auth_failure_limit_per_minute)
       validate_optional_positive_integer!(:ingestion_rate_limit_per_minute, ingestion_rate_limit_per_minute)
+      validate_optional_positive_integer!(:ingestion_project_rate_limit_per_minute, ingestion_project_rate_limit_per_minute)
+      validate_boolean!(:allow_request_base_url_fallback, allow_request_base_url_fallback)
+      validate_boolean!(:trust_forwarded_headers, trust_forwarded_headers)
 
       validate_capture_client_settings!
       validate_frontend_settings!
@@ -277,7 +292,7 @@ module Sentrace
       return nil unless normalized_request_origin
 
       matched = origins.any? { |entry| normalize_origin(entry.to_s) == normalized_request_origin }
-      matched ? raw_origin : nil
+      matched ? normalized_request_origin : nil
     end
 
     def inspect
@@ -319,6 +334,12 @@ module Sentrace
         return if val.is_a?(Integer) && val.positive?
 
         raise ConfigurationError, "#{attr_name} must be a positive Integer or nil (got #{val.inspect})"
+      end
+
+      def validate_boolean!(attr_name, val)
+        return if val == true || val == false
+
+        raise ConfigurationError, "#{attr_name} must be true or false (got #{val.inspect})"
       end
 
       def validate_capture_client_settings!
@@ -456,6 +477,11 @@ module Sentrace
         end
 
         environments.each_value do |env_def|
+          unless env_def.read_only == true || env_def.read_only == false
+            raise ConfigurationError,
+              "environment #{env_def.name.inspect} read_only must be true or false (got #{env_def.read_only.inspect})"
+          end
+
           case env_def.transport
           when :local
             next

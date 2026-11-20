@@ -24,13 +24,28 @@ module Sentrace
         SECURITY_HEADER_NAMES_DOWNCASE.include?(header_name.to_s.downcase)
       end
 
-      def https_or_loopback?(request)
-        return true if request.ssl?
+      def https_or_loopback?(request, trust_forwarded_headers: Sentrace.configuration.trust_forwarded_headers)
+        if trust_forwarded_headers
+          return true if request.ssl?
+        else
+          return true if direct_tls?(request)
+        end
+
         return false unless loopback_host?(request.host)
-        return false unless loopback_ip?(request.remote_ip)
+        return false unless loopback_ip?(client_ip(request, trust_forwarded_headers: trust_forwarded_headers))
 
         remote_addr = request.env["REMOTE_ADDR"].to_s.strip
         remote_addr.empty? || loopback_ip?(remote_addr)
+      end
+
+      def client_ip(request, trust_forwarded_headers: Sentrace.configuration.trust_forwarded_headers)
+        raw =
+          if trust_forwarded_headers
+            request.remote_ip
+          else
+            request.env["REMOTE_ADDR"]
+          end
+        raw.to_s.strip
       end
 
       def loopback_host?(raw_host)
@@ -48,11 +63,11 @@ module Sentrace
         addr.loopback?
       end
 
-      def ip_allowed?(request, allowed_ips)
+      def ip_allowed?(request, allowed_ips, trust_forwarded_headers: Sentrace.configuration.trust_forwarded_headers)
         entries = Array(allowed_ips).compact
         return true if entries.empty?
 
-        remote_addr = parse_ip(request.remote_ip)
+        remote_addr = parse_ip(client_ip(request, trust_forwarded_headers: trust_forwarded_headers))
         return false unless remote_addr
 
         entries.any? do |entry|
@@ -94,7 +109,7 @@ module Sentrace
         cleaned = raw_value.to_s.dup.force_encoding(Encoding::UTF_8).scrub
         cleaned.gsub!(/\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/, "")
         cleaned.gsub!(/[\x00-\x1F\x7F\u0080-\u009F]/, " ")
-        cleaned.gsub!(/[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\u061C\uFEFF\u{E0000}-\u{E007F}]/, "")
+        cleaned.gsub!(/[\u00AD\u034F\u061C\u115F\u1160\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/, "")
         cleaned.strip!
         max_chars ? cleaned[0, max_chars] : cleaned
       end
@@ -141,6 +156,12 @@ module Sentrace
       end
 
       private
+        def direct_tls?(request)
+          env = request.env || {}
+          env["HTTPS"].to_s.casecmp("on").zero? ||
+            env["rack.url_scheme"].to_s.casecmp("https").zero?
+        end
+
         def normalize_ipaddr(addr)
           addr.ipv4_mapped? ? addr.native : addr
         end
