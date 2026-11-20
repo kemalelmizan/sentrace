@@ -1,6 +1,6 @@
 import type { ParsedDsn } from "./types.ts";
 
-export const VERSION = "0.1.3";
+export const VERSION = "0.1.4";
 export const SDK_NAME = "sentrace.javascript.browser";
 export const SDK_CLIENT = `sentrace-js/${VERSION}`;
 

@@ -1,6 +1,6 @@
 {
   "name": "sentrace",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Zero-dependency @sentry/browser-compatible frontend error capturing SDK for Sentrace — cohesively integrated with Ruby on Rails, Hotwire, React, and federated MCP.",
   "license": "MIT",
   "author": "Kemal Elmizan <kemalelmizan@gmail.com>",
