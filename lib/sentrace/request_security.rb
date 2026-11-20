@@ -42,13 +42,34 @@ module Sentrace
       end
 
       def loopback_ip?(raw_ip)
-        cleaned = raw_ip.to_s.strip.delete_prefix("[").delete_suffix("]")
-        return false if cleaned.empty?
+        addr = parse_ip(raw_ip)
+        return false unless addr
 
-        addr = IPAddr.new(cleaned)
-        addr.loopback? || (addr.ipv4_mapped? && addr.native.loopback?)
+        addr.loopback?
+      end
+
+      def ip_allowed?(request, allowed_ips)
+        entries = Array(allowed_ips).compact
+        return true if entries.empty?
+
+        remote_addr = parse_ip(request.remote_ip)
+        return false unless remote_addr
+
+        entries.any? do |entry|
+          cidr = entry.is_a?(IPAddr) ? normalize_ipaddr(entry) : parse_ip(entry)
+          cidr && cidr.include?(remote_addr)
+        rescue IPAddr::AddressFamilyError, IPAddr::InvalidAddressError
+          false
+        end
+      end
+
+      def parse_ip(raw_ip)
+        cleaned = raw_ip.to_s.strip.delete_prefix("[").delete_suffix("]")
+        return nil if cleaned.empty?
+
+        normalize_ipaddr(IPAddr.new(cleaned))
       rescue IPAddr::InvalidAddressError, ArgumentError
-        false
+        nil
       end
 
       def forbidden_cross_origin?(request)
@@ -109,6 +130,10 @@ module Sentrace
       end
 
       private
+        def normalize_ipaddr(addr)
+          addr.ipv4_mapped? ? addr.native : addr
+        end
+
         def unsafe_method?(request)
           !request.get? && !request.head? && !request.options?
         end

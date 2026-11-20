@@ -161,6 +161,11 @@ Configure Sentrace in `config/initializers/sentrace.rb`:
 | `remote_ping_timeout` | `2.5` | Upper wall-clock bound (seconds) for concurrent `list_environments` `ping` health probes. |
 | `environments` | `{ local: { transport: :local } }` | Map of `:local` and `:http` MCP environments (blank `:http` URL/token reports `"unconfigured"` safely). |
 | `internal_authenticator` | `nil` | Optional callable `->(request) { boolean }` for `/sentrace/internal/*` routes (defaults to MCP bearer token auth). |
+| `mcp_allowed_ips` | `[]` | Optional Array of IP/CIDR strings (e.g. `%w[10.0.0.0/8 203.0.113.5]`) enforced on `/sentrace/mcp` before bearer auth (`403` if outside allowlist). |
+| `internal_allowed_ips` | `[]` | Optional Array of IP/CIDR strings enforced on `/sentrace/internal/*` before auth (`403` if outside allowlist). |
+| `mcp_rate_limit_per_minute` | `120` | Per-IP 60-second request limit on `/sentrace/mcp` backed by `Rails.cache` (with in-memory fallback when `NullStore`), returning `429` + `Retry-After`. Set `nil` to disable. |
+| `mcp_auth_failure_limit_per_minute` | `20` | Per-IP 60-second limit on failed `/sentrace/mcp` bearer authentication attempts (`429` + `Retry-After`). Set `nil` to disable. |
+| `ingestion_rate_limit_per_minute` | `nil` | Optional per-project/IP 60-second rate limit on `/sentrace/api/:project_id/envelope` (`429` + `Retry-After`). |
 
 ### Rack / Puma Client Disconnects & Host RSpec Helpers
 
@@ -195,6 +200,7 @@ bin/rails "sentrace:projects:rotate_key[my-app]"
 # Dedicated MCP bearer tokens (stored as SHA-256 digests, separate from DSNs)
 bin/rails sentrace:mcp:tokens
 bin/rails "sentrace:mcp:tokens:create[staging]"
+READ_ONLY=true EXPIRES_IN_DAYS=30 bin/rails "sentrace:mcp:tokens:create[ci-readonly]"
 bin/rails "sentrace:mcp:tokens:rotate[staging]"
 bin/rails "sentrace:mcp:tokens:revoke[1]"
 ```
@@ -220,15 +226,19 @@ token_record, _ = Sentrace::McpToken.ensure!(name: "production", token: ENV["SEN
 
 ## Reverse Proxy (TLS Termination) & OWASP ModSecurity CRS
 
-### Forwarding `X-Forwarded-Proto: https` for `/sentrace/mcp`
+### Forwarding `X-Forwarded-Proto: https` & `X-Forwarded-For` for `/sentrace/mcp`
 
-`Sentrace::McpController` enforces HTTPS on all non-loopback hosts (`403 Forbidden` over plain HTTP). When TLS terminates at Nginx, AWS ALB, Alibaba SLB, or Fastly/Cloudflare in front of Puma, ensure the reverse proxy forwards `X-Forwarded-Proto: https` so Rails `request.ssl?` evaluates to `true`:
+`Sentrace::McpController` enforces HTTPS on all non-loopback hosts (`403 Forbidden` over plain HTTP), and `config.mcp_allowed_ips` / `config.internal_allowed_ips` evaluate `request.remote_ip`.
+
+> **Security Note (Reverse Proxy Header Trust):** When Nginx and Puma run on the same host (`REMOTE_ADDR == 127.0.0.1`), `RequestSecurity.https_or_loopback?` trusts `request.ssl?` and `request.remote_ip`. Reverse proxies in front of Rails **must overwrite** (never blindly append or forward untrusted client-supplied) `X-Forwarded-Proto` and `X-Forwarded-For` headers. If your app sits behind a CDN, ALB, or multi-hop proxy, configure `config.action_dispatch.trusted_proxies` in Rails so `ActionDispatch::RemoteIp` strips untrusted hops and derives `request.remote_ip` accurately.
+
+When TLS terminates at Nginx, AWS ALB, Alibaba SLB, or Fastly/Cloudflare in front of Puma, ensure the reverse proxy overwrites `X-Forwarded-Proto` and `X-Forwarded-For`:
 
 ```nginx
 location /sentrace/ {
   proxy_pass http://puma_upstream;
   proxy_set_header Host $host;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-For $remote_addr;
   proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```

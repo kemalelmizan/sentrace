@@ -117,5 +117,36 @@ RSpec.describe "Sentrace Internal Administrative API (/sentrace/internal)", type
       expect(response).to have_http_status(422)
       expect(response.headers["Cache-Control"]).to eq("no-store")
     end
+
+    it "enforces internal_allowed_ips and blocks issue mutations for read-only MCP tokens" do
+      Sentrace.configure { |c| c.internal_allowed_ips = [ "10.0.0.0/8" ] }
+
+      get "/sentrace/internal/projects", headers: auth_headers.merge("REMOTE_ADDR" => "203.0.113.9")
+      expect(response).to have_http_status(:forbidden)
+
+      get "/sentrace/internal/projects", headers: auth_headers.merge("REMOTE_ADDR" => "10.1.2.3")
+      expect(response).to have_http_status(:ok)
+
+      Sentrace.reset_configuration!
+      _ro_record, ro_raw = Sentrace::McpToken.issue!(name: "internal-ro", read_only: true)
+      ro_headers = { "Authorization" => "Bearer #{ro_raw}" }
+
+      proj, _ = Sentrace::Project.provision!(slug: "ro-internal-proj")
+      ingest_res = Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "cccc1111dddd2222eeee3333ffff4444",
+          "timestamp" => "2026-11-16T05:00:00Z",
+          "level" => "error",
+          "message" => "Internal RO check"
+        },
+        project: proj.id
+      )
+
+      get "/sentrace/internal/issues", params: { project_id: proj.id }, headers: ro_headers
+      expect(response).to have_http_status(:ok)
+
+      patch "/sentrace/internal/issues/#{ingest_res.issue_id}", params: { status: "resolved" }, headers: ro_headers
+      expect(response).to have_http_status(:forbidden)
+    end
   end
 end

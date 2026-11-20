@@ -194,4 +194,109 @@ RSpec.describe "Sentrace Remote Streamable HTTP MCP Endpoint (/sentrace/mcp)", t
       expect(response).to have_http_status(:method_not_allowed)
     end
   end
+
+  describe "hardening: IP allowlisting, rate limiting, and read-only token scopes" do
+    it "enforces config.mcp_allowed_ips before bearer authentication" do
+      Sentrace.configure do |config|
+        config.mcp_allowed_ips = [ "10.20.0.0/16", "203.0.113.5" ]
+      end
+
+      rpc_body = json_rpc("tools/list")
+
+      # Even without Authorization header, disallowed IP gets 403 Forbidden (not 401)
+      post "https://staging.example.com/sentrace/mcp",
+        params: rpc_body,
+        headers: { "Content-Type" => "application/json", "REMOTE_ADDR" => "198.51.100.7" }
+      expect(response).to have_http_status(:forbidden)
+      expect(JSON.parse(response.body)["error"]).to include("IP address not allowed")
+
+      # Allowed CIDR IP proceeds to bearer auth and succeeds
+      post "https://staging.example.com/sentrace/mcp",
+        params: rpc_body,
+        headers: mcp_headers.merge("REMOTE_ADDR" => "10.20.4.18")
+      expect(response).to have_http_status(:ok)
+    end
+
+    it "enforces mcp_rate_limit_per_minute and mcp_auth_failure_limit_per_minute with 429 and Retry-After" do
+      memory_cache = ActiveSupport::Cache::MemoryStore.new
+      allow(Rails).to receive(:cache).and_return(memory_cache)
+
+      Sentrace.configure do |config|
+        config.mcp_rate_limit_per_minute = 2
+        config.mcp_auth_failure_limit_per_minute = 5
+      end
+
+      2.times do
+        post "https://staging.example.com/sentrace/mcp",
+          params: json_rpc("tools/list"),
+          headers: mcp_headers.merge("REMOTE_ADDR" => "198.51.100.20")
+        expect(response).to have_http_status(:ok)
+      end
+
+      post "https://staging.example.com/sentrace/mcp",
+        params: json_rpc("tools/list"),
+        headers: mcp_headers.merge("REMOTE_ADDR" => "198.51.100.20")
+      expect(response).to have_http_status(:too_many_requests)
+      expect(response.headers["Retry-After"].to_i).to be >= 1
+
+      # Auth failure limit blocks repeated invalid tokens with 429 without hitting DB on subsequent attempts
+      Sentrace.configure do |config|
+        config.mcp_rate_limit_per_minute = 50
+        config.mcp_auth_failure_limit_per_minute = 2
+      end
+
+      bad_headers = {
+        "Authorization" => "Bearer snt_mcp_invalid0000000000000000000000000",
+        "Content-Type" => "application/json",
+        "Accept" => "application/json, text/event-stream",
+        "REMOTE_ADDR" => "198.51.100.21"
+      }
+
+      2.times do
+        post "https://staging.example.com/sentrace/mcp", params: json_rpc("tools/list"), headers: bad_headers
+        expect(response).to have_http_status(:unauthorized)
+      end
+
+      expect(Sentrace::McpToken).not_to receive(:authenticate)
+      post "https://staging.example.com/sentrace/mcp", params: json_rpc("tools/list"), headers: bad_headers
+      expect(response).to have_http_status(:too_many_requests)
+      expect(response.headers["Retry-After"].to_i).to be >= 1
+    end
+
+    it "prevents read-only tokens from invoking update_issue_status" do
+      _ro_record, ro_raw = Sentrace::McpToken.issue!(name: "readonly-agent", read_only: true)
+      ro_headers = mcp_headers.merge("Authorization" => "Bearer #{ro_raw}")
+
+      ingest_res = Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "bbbb1111cccc2222dddd3333eeee4444",
+          "timestamp" => "2026-11-16T04:00:00Z",
+          "level" => "error",
+          "message" => "Read-only test error"
+        },
+        project: project
+      )
+
+      # Read tools work
+      post "https://staging.example.com/sentrace/mcp",
+        params: json_rpc("tools/call", { name: "list_issues", arguments: { project_id: project.id } }, id: 1),
+        headers: ro_headers
+      expect(response).to have_http_status(:ok)
+      expect(JSON.parse(response.body).dig("result", "isError")).to be_falsey
+
+      # Mutation tool returns forbidden MCP error
+      post "https://staging.example.com/sentrace/mcp",
+        params: json_rpc(
+          "tools/call",
+          { name: "update_issue_status", arguments: { issue_id: ingest_res.issue_id, status: "resolved" } },
+          id: 2
+        ),
+        headers: ro_headers
+      expect(response).to have_http_status(:ok)
+      body = JSON.parse(response.body)
+      expect(body.dig("result", "isError")).to be(true)
+      expect(body.dig("result", "structuredContent", "category")).to eq("forbidden")
+      expect(Sentrace::Issue.find(ingest_res.issue_id).status).to eq("unresolved")
+    end
+  end
 end

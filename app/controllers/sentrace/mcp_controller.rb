@@ -6,6 +6,8 @@ module Sentrace
     MAX_MCP_REQUEST_BYTES = 1.megabyte
 
     def handle
+      config = Sentrace.configuration
+
       unless https_or_loopback?
         return render json: { error: "HTTPS is required for non-local MCP endpoints" }, status: :forbidden
       end
@@ -14,13 +16,54 @@ module Sentrace
         return render json: { error: "Cross-origin MCP requests are forbidden" }, status: :forbidden
       end
 
+      unless RequestSecurity.ip_allowed?(request, config.mcp_allowed_ips)
+        return render json: { error: "IP address not allowed" }, status: :forbidden
+      end
+
+      client_ip = rate_limit_identifier
+
+      rate_result = RateLimiter.check!(
+        bucket: "mcp",
+        identifier: client_ip,
+        limit: config.mcp_rate_limit_per_minute
+      )
+      unless rate_result[:allowed]
+        return render_rate_limited(rate_result[:retry_after])
+      end
+
+      if config.mcp_auth_failure_limit_per_minute
+        auth_precheck = RateLimiter.check!(
+          bucket: "mcp_auth_fail",
+          identifier: client_ip,
+          limit: config.mcp_auth_failure_limit_per_minute,
+          increment: false
+        )
+        if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
+          return render_rate_limited(auth_precheck[:retry_after])
+        end
+      end
+
       token_record = authenticate_bearer_token
       unless token_record
+        if config.mcp_auth_failure_limit_per_minute
+          fail_result = RateLimiter.check!(
+            bucket: "mcp_auth_fail",
+            identifier: client_ip,
+            limit: config.mcp_auth_failure_limit_per_minute,
+            increment: true
+          )
+          unless fail_result[:allowed]
+            return render_rate_limited(fail_result[:retry_after])
+          end
+        end
+
         response.set_header("WWW-Authenticate", 'Bearer realm="sentrace-mcp"')
         return render json: { error: "Unauthorized" }, status: :unauthorized
       end
 
-      mcp_server = Mcp::Server.build(dispatcher: build_node_dispatcher(Sentrace.configuration))
+      mcp_server = Mcp::Server.build(
+        dispatcher: build_node_dispatcher(config, read_only: token_record.read_only?)
+      )
       transport = ::MCP::Server::Transports::StreamableHTTPTransport.new(
         mcp_server,
         stateless: true,
@@ -39,6 +82,15 @@ module Sentrace
         RequestSecurity.https_or_loopback?(request)
       end
 
+      def rate_limit_identifier
+        request.remote_ip.to_s.strip.presence || "unknown"
+      end
+
+      def render_rate_limited(retry_after)
+        response.set_header("Retry-After", retry_after.to_s)
+        render json: { error: "Rate limit exceeded" }, status: :too_many_requests
+      end
+
       def authenticate_bearer_token
         auth_header = request.headers["Authorization"].to_s
         return nil if auth_header.bytesize > 1024
@@ -49,13 +101,13 @@ module Sentrace
         McpToken.authenticate(match[1])
       end
 
-      def build_node_dispatcher(config)
+      def build_node_dispatcher(config, read_only: false)
         env_label = config.deployment_environment.to_s.strip
         env_label = "local" if env_label.empty?
 
         node_config = config.dup
         node_config.environments = { env_label.to_sym => { transport: :local } }
-        Mcp::Dispatcher.new(config: node_config, remote_client: nil)
+        Mcp::Dispatcher.new(config: node_config, remote_client: nil, read_only: read_only)
       end
 
       def write_rack_response(rack_status, rack_headers, rack_body)

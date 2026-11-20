@@ -1,6 +1,8 @@
 module Sentrace
   module Internal
     class IssuesController < BaseController
+      before_action :require_write_scope!, only: :update
+
       def index
         payload = local_backend.list_issues(
           project_id: scalar_param(:project_id),
@@ -31,6 +33,13 @@ module Sentrace
         )
         render json: payload
       end
+
+      private
+        def require_write_scope!
+          if @current_mcp_token&.read_only?
+            render json: { error: "Forbidden: read-only token cannot update issue status" }, status: :forbidden
+          end
+        end
     end
   end
 end

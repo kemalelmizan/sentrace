@@ -13,14 +13,34 @@ namespace :sentrace do
     namespace :tokens do
       desc "Issue a new Sentrace MCP bearer token (stored as SHA-256 digest)"
       task :create, [ :name ] => :environment do |_task, args|
-        Sentrace::Mcp::TokenManager.new.create(name: args[:name])
+        read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        scopes = ENV["SCOPES"]&.strip
+        expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
+        expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
+
+        Sentrace::Mcp::TokenManager.new.create(
+          name: args[:name],
+          expires_in: expires_in,
+          scopes: scopes.presence,
+          read_only: read_only
+        )
       rescue ArgumentError, ActiveRecord::RecordInvalid => e
         abort e.message
       end
 
       desc "Rotate active Sentrace MCP bearer token(s) for a given name"
       task :rotate, [ :name ] => :environment do |_task, args|
-        Sentrace::Mcp::TokenManager.new.rotate(name: args[:name])
+        read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
+        scopes = ENV["SCOPES"]&.strip
+        expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
+        expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
+
+        Sentrace::Mcp::TokenManager.new.rotate(
+          name: args[:name],
+          expires_in: expires_in,
+          scopes: scopes.presence,
+          read_only: read_only
+        )
       rescue ArgumentError, ActiveRecord::RecordInvalid => e
         abort e.message
       end

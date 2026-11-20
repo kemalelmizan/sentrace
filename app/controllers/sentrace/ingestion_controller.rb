@@ -20,6 +20,18 @@ module Sentrace
         return render json: { id: nil }, status: :accepted
       end
 
+      if config.ingestion_rate_limit_per_minute
+        rate_result = RateLimiter.check!(
+          bucket: "ingestion",
+          identifier: "#{params[:project_id]}:#{request.remote_ip.to_s.strip.presence || 'unknown'}",
+          limit: config.ingestion_rate_limit_per_minute
+        )
+        unless rate_result[:allowed]
+          response.set_header("Retry-After", rate_result[:retry_after].to_s)
+          return render json: { error: "Rate limit exceeded" }, status: :too_many_requests
+        end
+      end
+
       max_size = config.max_envelope_size
       if request.content_length && request.content_length > max_size
         return render json: { error: "Payload too large" }, status: 413

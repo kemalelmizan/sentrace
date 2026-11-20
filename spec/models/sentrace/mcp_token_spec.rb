@@ -104,4 +104,37 @@ RSpec.describe Sentrace::McpToken do
       }.to raise_error(ArgumentError, /revoked/)
     end
   end
+
+  describe "expiration and scopes" do
+    it "enforces expires_at / expires_in in .active and .authenticate" do
+      expired_record, expired_raw = described_class.issue!(name: "short-lived", expires_at: 1.minute.ago)
+      valid_record, valid_raw = described_class.issue!(name: "valid-ttl", expires_in: 1.hour)
+
+      expect(expired_record.expired?).to be(true)
+      expect(expired_record.active_now?).to be(false)
+      expect(described_class.active).not_to include(expired_record)
+      expect(described_class.authenticate(expired_raw)).to be_nil
+
+      expect(valid_record.expired?).to be(false)
+      expect(valid_record.active_now?).to be(true)
+      expect(described_class.active).to include(valid_record)
+      expect(described_class.authenticate(valid_raw)).to eq(valid_record)
+    end
+
+    it "supports read_only and scopes on issue!, rotate!, and ensure!" do
+      ro_record, _ro_raw = described_class.issue!(name: "ci-reader", read_only: true)
+      expect(ro_record.scopes).to eq("read")
+      expect(ro_record.read_only?).to be(true)
+      expect(ro_record.allows_scope?("read")).to be(true)
+      expect(ro_record.allows_scope?("write")).to be(false)
+
+      rw_record, _rw_raw = described_class.rotate!(name: "ci-reader", scopes: %w[read write])
+      expect(rw_record.scopes).to eq("read,write")
+      expect(rw_record.read_only?).to be(false)
+
+      expect {
+        described_class.issue!(name: "bad-scope", scopes: "admin")
+      }.to raise_error(ArgumentError, /scopes must be a non-empty subset/)
+    end
+  end
 end

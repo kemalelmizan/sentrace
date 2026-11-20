@@ -3,6 +3,7 @@ require "sentrace/version"
 require "sentrace/errors"
 require "sentrace/configuration"
 require "sentrace/request_security"
+require "sentrace/rate_limiter"
 require "sentrace/dsn"
 require "sentrace/project_manager"
 require "sentrace/bootstrapper"
@@ -56,6 +57,7 @@ module Sentrace
     def reset_configuration!
       CaptureDispatcher.clear_cache!
       FrontendDsnResolver.clear_cache!
+      RateLimiter.reset!
       Breadcrumbs.reset! if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:reset!)
       @configuration = Configuration.new
     end
@@ -78,6 +80,7 @@ module Sentrace
         @configuration = isolated_config
         CaptureDispatcher.clear_cache!
         FrontendDsnResolver.clear_cache!
+        RateLimiter.reset!
         Integrations::ExceptionDeduplicator.reset!
         Scope.clear!
         Breadcrumbs.apply_configuration!(isolated_config) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
@@ -86,6 +89,7 @@ module Sentrace
         @configuration = previous_config
         CaptureDispatcher.clear_cache!
         FrontendDsnResolver.clear_cache!
+        RateLimiter.reset!
         Integrations::ExceptionDeduplicator.reset!
         if previous_stack
           Thread.current[Scope::SCOPE_STACK_KEY] = previous_stack

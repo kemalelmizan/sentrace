@@ -24,6 +24,11 @@ RSpec.describe Sentrace::Configuration do
       expect(config.orphan_issue_retention_period).to eq(7.days)
       expect(config.retention_batch_size).to eq(1_000)
       expect(config.internal_authenticator).to be_nil
+      expect(config.mcp_allowed_ips).to eq([])
+      expect(config.internal_allowed_ips).to eq([])
+      expect(config.mcp_rate_limit_per_minute).to eq(120)
+      expect(config.mcp_auth_failure_limit_per_minute).to eq(20)
+      expect(config.ingestion_rate_limit_per_minute).to be_nil
       expect(config.max_envelope_size).to eq(1.megabyte)
       expect(config.max_events_per_envelope).to eq(10)
       expect(config.max_envelope_items).to eq(50)
@@ -343,6 +348,43 @@ RSpec.describe Sentrace::Configuration do
           }
         end
       }.to raise_error(Sentrace::ConfigurationError, /token must not contain whitespace or control characters/)
+    end
+
+    it "validates mcp_allowed_ips, internal_allowed_ips, and rate limit settings" do
+      Sentrace.configure do |config|
+        config.mcp_allowed_ips = [ "10.0.0.0/8", "203.0.113.42" ]
+        config.internal_allowed_ips = nil
+        config.mcp_rate_limit_per_minute = 60
+        config.mcp_auth_failure_limit_per_minute = 10
+        config.ingestion_rate_limit_per_minute = 500
+      end
+
+      cfg = Sentrace.configuration
+      expect(cfg.mcp_allowed_ips).to eq([ "10.0.0.0/8", "203.0.113.42" ])
+      expect(cfg.internal_allowed_ips).to be_nil
+      expect(cfg.mcp_rate_limit_per_minute).to eq(60)
+      expect(cfg.mcp_auth_failure_limit_per_minute).to eq(10)
+      expect(cfg.ingestion_rate_limit_per_minute).to eq(500)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.mcp_allowed_ips = [ "not-an-ip" ] }
+      }.to raise_error(Sentrace::ConfigurationError, /not a valid IP or CIDR/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.internal_allowed_ips = "10.0.0.1" }
+      }.to raise_error(Sentrace::ConfigurationError, /internal_allowed_ips must be an Array/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.mcp_rate_limit_per_minute = 0 }
+      }.to raise_error(Sentrace::ConfigurationError, /mcp_rate_limit_per_minute must be a positive Integer or nil/)
+
+      Sentrace.reset_configuration!
+      expect {
+        Sentrace.configure { |config| config.mcp_auth_failure_limit_per_minute = -3 }
+      }.to raise_error(Sentrace::ConfigurationError, /mcp_auth_failure_limit_per_minute must be a positive Integer or nil/)
     end
   end
 end

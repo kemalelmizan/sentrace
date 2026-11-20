@@ -1,6 +1,7 @@
 module Sentrace
   module Internal
     class BaseController < ApplicationController
+      before_action :verify_internal_ip_allowlist!
       before_action :verify_request_origin_and_csrf!
       before_action :authenticate_internal_request!
 
@@ -21,6 +22,12 @@ module Sentrace
       end
 
       private
+        def verify_internal_ip_allowlist!
+          unless RequestSecurity.ip_allowed?(request, Sentrace.configuration.internal_allowed_ips)
+            render json: { error: "IP address not allowed" }, status: :forbidden
+          end
+        end
+
         def verify_request_origin_and_csrf!
           if RequestSecurity.forbidden_cross_origin?(request) || RequestSecurity.forbidden_cookie_csrf?(request)
             render json: { error: "Forbidden" }, status: :forbidden
@@ -38,7 +45,8 @@ module Sentrace
 
           auth_header = request.headers["Authorization"].to_s
           bearer = auth_header.bytesize <= 1024 ? auth_header[/\ABearer\s+(\S+)\z/i, 1] : nil
-          return if McpToken.authenticate(bearer)
+          @current_mcp_token = McpToken.authenticate(bearer)
+          return if @current_mcp_token
 
           response.set_header("WWW-Authenticate", 'Bearer realm="sentrace-internal"')
           render json: { error: "Unauthorized" }, status: :unauthorized

@@ -42,7 +42,7 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     expect(routes_content.scan("Sentrace::Engine").size).to eq(1)
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
-    expect(copied_migrations.size).to eq(5)
+    expect(copied_migrations.size).to eq(6)
     copied_migrations.each do |migration_path|
       content = File.read(migration_path)
       expect(content).to include("ActiveRecord::Migration[6.1]")
@@ -85,7 +85,7 @@ RSpec.describe Sentrace::Generators::InstallGenerator do
     expect(routes_content.scan("Sentrace::Engine").size).to eq(1)
 
     copied_migrations = Dir.glob(File.join(@destination, "db/migrate/*.rb"))
-    expect(copied_migrations.size).to eq(5)
+    expect(copied_migrations.size).to eq(6)
     copied_migrations.each do |migration_path|
       content = File.read(migration_path)
       expect(content).to include("ActiveRecord::Migration[6.1]")

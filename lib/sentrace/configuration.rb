@@ -1,5 +1,6 @@
 require "active_support/core_ext/numeric/bytes"
 require "active_support/core_ext/numeric/time"
+require "ipaddr"
 require "uri"
 
 module Sentrace
@@ -101,6 +102,11 @@ module Sentrace
       :retain_user_fields,
       :sanitizer,
       :internal_authenticator,
+      :mcp_allowed_ips,
+      :internal_allowed_ips,
+      :mcp_rate_limit_per_minute,
+      :mcp_auth_failure_limit_per_minute,
+      :ingestion_rate_limit_per_minute,
       :user_hash_secret,
       :remote_timeout,
       :remote_ping_timeout
@@ -142,6 +148,11 @@ module Sentrace
       @retain_user_fields = []
       @sanitizer = nil
       @internal_authenticator = nil
+      @mcp_allowed_ips = []
+      @internal_allowed_ips = []
+      @mcp_rate_limit_per_minute = 120
+      @mcp_auth_failure_limit_per_minute = 20
+      @ingestion_rate_limit_per_minute = nil
       @user_hash_secret = nil
       @remote_timeout = 5.0
       @remote_ping_timeout = 2.5
@@ -156,6 +167,8 @@ module Sentrace
       @redact_fields = other.redact_fields.dup
       @allow_fields = other.allow_fields.dup
       @retain_user_fields = other.retain_user_fields.dup
+      @mcp_allowed_ips = other.mcp_allowed_ips.is_a?(Array) ? other.mcp_allowed_ips.map(&:dup) : other.mcp_allowed_ips.dup
+      @internal_allowed_ips = other.internal_allowed_ips.is_a?(Array) ? other.internal_allowed_ips.map(&:dup) : other.internal_allowed_ips.dup
       @environments = other.environments.dup
     end
 
@@ -222,6 +235,12 @@ module Sentrace
         raise ConfigurationError, "deployment_environment must be a non-empty String or Symbol"
       end
 
+      validate_ip_allowlist!(:mcp_allowed_ips, mcp_allowed_ips)
+      validate_ip_allowlist!(:internal_allowed_ips, internal_allowed_ips)
+      validate_optional_positive_integer!(:mcp_rate_limit_per_minute, mcp_rate_limit_per_minute)
+      validate_optional_positive_integer!(:mcp_auth_failure_limit_per_minute, mcp_auth_failure_limit_per_minute)
+      validate_optional_positive_integer!(:ingestion_rate_limit_per_minute, ingestion_rate_limit_per_minute)
+
       validate_capture_client_settings!
       validate_frontend_settings!
       validate_environments!
@@ -266,6 +285,35 @@ module Sentrace
     end
 
     private
+      def validate_ip_allowlist!(attr_name, raw_list)
+        return if raw_list.nil?
+
+        unless raw_list.is_a?(Array)
+          raise ConfigurationError, "#{attr_name} must be an Array of IP/CIDR strings or nil"
+        end
+
+        raw_list.each do |entry|
+          next if entry.is_a?(IPAddr)
+
+          unless entry.is_a?(String) && !entry.strip.empty?
+            raise ConfigurationError, "#{attr_name} entries must be non-empty IP/CIDR strings (got #{entry.inspect})"
+          end
+
+          begin
+            IPAddr.new(entry.strip)
+          rescue IPAddr::InvalidAddressError, ArgumentError
+            raise ConfigurationError, "#{attr_name} entry #{entry.inspect} is not a valid IP or CIDR"
+          end
+        end
+      end
+
+      def validate_optional_positive_integer!(attr_name, val)
+        return if val.nil?
+        return if val.is_a?(Integer) && val.positive?
+
+        raise ConfigurationError, "#{attr_name} must be a positive Integer or nil (got #{val.inspect})"
+      end
+
       def validate_capture_client_settings!
         unless project_slug.nil? || project_slug.is_a?(String) || project_slug.is_a?(Symbol)
           raise ConfigurationError, "project_slug must be a String, Symbol, or nil"

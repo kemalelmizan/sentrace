@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_16_000005) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -57,6 +57,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_16_000005) do
     t.timestamptz "last_used_at"
     t.timestamptz "revoked_at"
     t.timestamptz "created_at", null: false
+    t.timestamptz "expires_at"
+    t.string "scopes", limit: 255, default: "read,write", null: false
     t.index ["token_digest"], name: "index_sentrace_mcp_tokens_on_token_digest", unique: true
   end
 

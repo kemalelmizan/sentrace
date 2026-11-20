@@ -423,6 +423,13 @@ module Sentrace
             structured_content: err,
             error: true
           )
+        rescue McpForbiddenError => e
+          err = { "error" => e.message, "category" => "forbidden" }
+          ::MCP::Tool::Response.new(
+            [ { type: "text", text: JSON.generate(err) } ],
+            structured_content: err,
+            error: true
+          )
         rescue McpInvalidParamsError => e
           err = { "error" => e.message, "category" => "invalid_params" }
           ::MCP::Tool::Response.new(

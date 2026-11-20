@@ -55,6 +55,8 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     expect(mcp_token_cols["created_at"].sql_type).to eq("timestamp with time zone")
     expect(mcp_token_cols["revoked_at"].sql_type).to eq("timestamp with time zone")
     expect(mcp_token_cols["last_used_at"].sql_type).to eq("timestamp with time zone")
+    expect(mcp_token_cols["expires_at"].sql_type).to eq("timestamp with time zone")
+    expect(mcp_token_cols["scopes"].sql_type).to eq("character varying(255)")
 
     mcp_token_indexes = connection.indexes(:sentrace_mcp_tokens).index_by(&:name)
     expect(mcp_token_indexes.keys).to contain_exactly("index_sentrace_mcp_tokens_on_token_digest")
@@ -63,7 +65,7 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
 
   it "uses ActiveRecord::Migration[6.1] and t.column(..., :timestamptz) without PG 15+ SQL constructs" do
     migrations = Dir.glob(File.expand_path("../../db/migrate/*.rb", __dir__)).sort
-    expect(migrations.size).to eq(5)
+    expect(migrations.size).to eq(6)
 
     migrations.each do |migration_file|
       source = File.read(migration_file)
@@ -90,7 +92,8 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
       CreateSentraceProjectKeys,
       CreateSentraceIssues,
       CreateSentraceEvents,
-      CreateSentraceMcpTokens
+      CreateSentraceMcpTokens,
+      AddExpiresAtAndScopesToSentraceMcpTokens
     ]
 
     ActiveRecord::Migration.suppress_messages do

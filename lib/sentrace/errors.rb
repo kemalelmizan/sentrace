@@ -8,6 +8,7 @@ module Sentrace
   class McpError < Error; end
   class McpInvalidParamsError < McpError; end
   class McpNotFoundError < McpError; end
+  class McpForbiddenError < McpError; end
   class McpRemoteError < McpError
     attr_reader :environment, :category
 
