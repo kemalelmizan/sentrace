@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
   // --- dsn.ts ---
-  const VERSION = "0.1.4";
+  const VERSION = "0.1.5";
   const SDK_NAME = "sentrace.javascript.browser";
   const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
