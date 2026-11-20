@@ -28,7 +28,7 @@ PostgreSQL (sentrace_projects, sentrace_project_keys, sentrace_mcp_tokens, sentr
 
 ## Requirements
 
-- Ruby `>= 3.2` (local development standardized on `3.3.13`)
+- Ruby `>= 3.2` (local development standardized on `3.3.14`)
 - Rails `>= 6.1, < 9.0` (`Rack >= 2.2`)
 - `pg` `>= 1.4, < 2.0`
 - PostgreSQL `>= 12`
