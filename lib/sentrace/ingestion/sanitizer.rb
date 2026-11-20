@@ -260,6 +260,8 @@ module Sentrace
           base_data.delete("ingestion_source")
         end
 
+        base_data = enforce_total_event_data_budget(base_data)
+
         issue_summary_source = base_data.dig("exception", "value") || base_data["message"]
         sanitized_issue_message = issue_summary_source ? EventNormalizer.strip_unsafe_characters(issue_summary_source, allow_newlines: true).to_s[0, 1024] : nil
 
@@ -690,6 +692,31 @@ module Sentrace
             clean_str = scrub_text(value.to_s)
             EventNormalizer.truncate_utf8_bytes(clean_str, 512)
           end
+        end
+
+        def enforce_total_event_data_budget(data)
+          max_bytes = @config.respond_to?(:max_event_data_bytes) && @config.max_event_data_bytes ? @config.max_event_data_bytes.to_i : 32_768
+          return data if JSON.generate(data).bytesize <= max_bytes
+
+          trimmed = data.dup
+          if trimmed["breadcrumbs"].is_a?(Array) && trimmed["breadcrumbs"].any?
+            trimmed["breadcrumbs"] = []
+            return trimmed if JSON.generate(trimmed).bytesize <= max_bytes
+          end
+
+          if trimmed["contexts"].is_a?(Hash) && trimmed["contexts"].any?
+            trimmed["contexts"] = {}
+            return trimmed if JSON.generate(trimmed).bytesize <= max_bytes
+          end
+
+          if trimmed["exception"].is_a?(Hash) && trimmed["exception"]["frames"].is_a?(Array) && trimmed["exception"]["frames"].size > 5
+            exc = trimmed["exception"].dup
+            exc["frames"] = exc["frames"].last(5)
+            trimmed["exception"] = exc
+            return trimmed if JSON.generate(trimmed).bytesize <= max_bytes
+          end
+
+          trimmed
         end
 
         def deep_dup(obj)

@@ -12,6 +12,9 @@ module Sentrace
       MAX_DISTRIBUTION_ENTRIES = 25
       MAX_TREND_BUCKETS = 1_440
       MAX_FILTER_BYTES = 256
+      MAX_BIGINT = (1 << 63) - 1
+      MIN_QUERY_TIME = Time.utc(1970, 1, 1)
+      MAX_QUERY_TIME = Time.utc(2100, 12, 31, 23, 59, 59)
       MAX_TREND_WINDOWS = {
         "minute" => 24.hours,
         "hour" => 60.days,
@@ -383,7 +386,11 @@ module Sentrace
             if hex_candidate.match?(Event::EVENT_ID_FORMAT)
               scope.find_by(event_id: hex_candidate)
             elsif raw.match?(/\A\d+\z/)
-              scope.find_by(id: Integer(raw, 10))
+              record_id = Integer(raw, 10)
+              if record_id <= 0 || record_id > MAX_BIGINT
+                raise McpInvalidParamsError, "event_id must be a positive 64-bit integer or 32-character hex ID"
+              end
+              scope.find_by(id: record_id)
             else
               raise McpInvalidParamsError, "event_id must be a 32-character hex ID or numeric record ID"
             end
@@ -399,7 +406,7 @@ module Sentrace
           str = raw_project_id.to_s.strip
           if str.match?(/\A\d+\z/)
             id = Integer(str, 10)
-            raise McpInvalidParamsError, "project_id must be positive" if id <= 0
+            raise McpInvalidParamsError, "project_id must be a positive 64-bit integer" if id <= 0 || id > MAX_BIGINT
 
             id
           else
@@ -421,7 +428,7 @@ module Sentrace
           return nil if val.nil? || val.to_s.strip.empty?
 
           int = Integer(val.to_s.strip, 10)
-          raise McpInvalidParamsError, "#{name} must be a positive integer" if int <= 0
+          raise McpInvalidParamsError, "#{name} must be a positive 64-bit integer" if int <= 0 || int > MAX_BIGINT
 
           int
         rescue ArgumentError, TypeError
@@ -472,9 +479,13 @@ module Sentrace
 
         def parse_optional_time(raw_time, name)
           return nil if raw_time.nil? || raw_time.to_s.strip.empty?
-          return raw_time.utc if raw_time.is_a?(Time)
 
-          Time.iso8601(raw_time.to_s.strip).utc
+          parsed = raw_time.is_a?(Time) ? raw_time.utc : Time.iso8601(raw_time.to_s.strip).utc
+          if parsed < MIN_QUERY_TIME || parsed > MAX_QUERY_TIME
+            raise McpInvalidParamsError, "Timestamp for #{name} is out of supported range (1970..2100)"
+          end
+
+          parsed
         rescue ArgumentError
           raise McpInvalidParamsError, "Invalid ISO-8601 timestamp for #{name}: #{raw_time.inspect}"
         end
@@ -501,11 +512,17 @@ module Sentrace
           end
 
           decoded = JSON.parse(Base64.urlsafe_decode64(stripped), max_nesting: 8)
-          unless decoded.is_a?(Hash) && decoded["ts"].is_a?(String) && decoded["id"].is_a?(Integer) && decoded["id"].positive?
+          unless decoded.is_a?(Hash) && decoded["ts"].is_a?(String) &&
+                 decoded["id"].is_a?(Integer) && decoded["id"].positive? && decoded["id"] <= MAX_BIGINT
             raise McpInvalidParamsError, "Invalid pagination cursor"
           end
 
-          { ts: Time.iso8601(decoded["ts"]).utc, id: decoded["id"] }
+          ts = Time.iso8601(decoded["ts"]).utc
+          if ts < MIN_QUERY_TIME || ts > MAX_QUERY_TIME
+            raise McpInvalidParamsError, "Invalid pagination cursor"
+          end
+
+          { ts: ts, id: decoded["id"] }
         rescue ArgumentError, JSON::ParserError, JSON::NestingError
           raise McpInvalidParamsError, "Malformed pagination cursor"
         end

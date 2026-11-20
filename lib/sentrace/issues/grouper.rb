@@ -21,8 +21,9 @@ module Sentrace
         now_utc = now.utc
         occurred_at = normalized_event.occurred_at.utc
         received_at = normalized_event.received_at.utc
+        duplicate_result = nil
 
-        Issue.transaction do
+        result = Issue.transaction do
           conn = Issue.connection
 
           issue_id = upsert_issue_shell(
@@ -48,12 +49,13 @@ module Sentrace
           )
 
           if event_record_id.nil?
-            next PersistResult.new(
+            duplicate_result = PersistResult.new(
               event_id: normalized_event.event_id,
               event_record_id: nil,
-              issue_id: issue_id,
+              issue_id: nil,
               duplicate: true
             )
+            raise ActiveRecord::Rollback
           end
 
           apply_issue_occurrence!(
@@ -73,6 +75,8 @@ module Sentrace
             duplicate: false
           )
         end
+
+        result || duplicate_result
       end
 
       private

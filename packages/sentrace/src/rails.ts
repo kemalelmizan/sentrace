@@ -1,4 +1,4 @@
-import { getGlobalObject, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
+import { getGlobalObject, isSameOrAllowedOrigin, normalizeSafeRequestId, scrubUrl } from "./dsn.ts";
 import type {
   Breadcrumb,
   CaptureContext,
@@ -7,6 +7,9 @@ import type {
 } from "./types.ts";
 
 interface MetaQueryDocument {
+  head?: {
+    querySelector?: (selector: string) => { getAttribute?: (name: string) => string | null; content?: string } | null;
+  } | null;
   querySelector?: (selector: string) => { getAttribute?: (name: string) => string | null; content?: string } | null;
   getElementsByTagName?: (
     tag: string
@@ -20,8 +23,20 @@ function readMetaTagContent(doc: MetaQueryDocument | undefined, metaName: string
     return undefined;
   }
 
+  const selector = `meta[name="${metaName}"]`;
+  if (doc.head && typeof doc.head.querySelector === "function") {
+    const headEl = doc.head.querySelector(selector);
+    if (headEl) {
+      const attrVal = typeof headEl.getAttribute === "function" ? headEl.getAttribute("content") : null;
+      const val = attrVal !== null && attrVal !== undefined ? attrVal : headEl.content;
+      if (typeof val === "string" && val.trim()) {
+        return val.trim();
+      }
+    }
+  }
+
   if (typeof doc.querySelector === "function") {
-    const el = doc.querySelector(`meta[name="${metaName}"]`);
+    const el = doc.querySelector(selector);
     if (el) {
       const attrVal = typeof el.getAttribute === "function" ? el.getAttribute("content") : null;
       const val = attrVal !== null && attrVal !== undefined ? attrVal : el.content;
@@ -81,6 +96,7 @@ export function readRailsMeta(customDoc?: unknown): RailsMetaConfig {
 }
 
 export interface RailsIntegrationHooks {
+  endpointUrl?: string | null;
   redactFields: string[];
   allowFields?: string[];
   onBreadcrumb: (breadcrumb: Breadcrumb) => void;
@@ -151,7 +167,10 @@ export function installRailsTurboInstrumentation(
     const requestId = normalizeSafeRequestId(
       readHeaderSafely(detail && detail.response ? detail.response.headers : undefined, "x-request-id")
     );
-    if (requestId) {
+    const g = getGlobalObject() as { window?: { location?: { href?: string } }; location?: { href?: string } };
+    const pageHref = (g.window && g.window.location ? g.window.location.href : undefined) || (g.location ? g.location.href : undefined);
+    const sameOriginRequest = isSameOrAllowedOrigin(rawUrl, hooks.endpointUrl || null, pageHref);
+    if (requestId && sameOriginRequest) {
       hooks.onRequestIdChange(requestId);
     }
 
@@ -167,7 +186,7 @@ export function installRailsTurboInstrumentation(
     hooks.captureException(underlying, {
       tags: {
         "rails.turbo": "fetch-request-error",
-        ...(requestId ? { request_id: requestId } : {})
+        ...(requestId && sameOriginRequest ? { request_id: requestId } : {})
       },
       contexts: {
         turbo: {
@@ -202,7 +221,10 @@ export function installRailsTurboInstrumentation(
     const requestId = normalizeSafeRequestId(
       readHeaderSafely(response ? response.headers : undefined, "x-request-id")
     );
-    if (requestId) {
+    const g = getGlobalObject() as { window?: { location?: { href?: string } }; location?: { href?: string } };
+    const pageHref = (g.window && g.window.location ? g.window.location.href : undefined) || (g.location ? g.location.href : undefined);
+    const sameOriginRequest = isSameOrAllowedOrigin(response ? response.url : undefined, hooks.endpointUrl || null, pageHref);
+    if (requestId && sameOriginRequest) {
       hooks.onRequestIdChange(requestId);
     }
 
@@ -215,7 +237,7 @@ export function installRailsTurboInstrumentation(
       tags: {
         "rails.turbo": "frame-missing",
         "turbo.frame": frameId,
-        ...(requestId ? { request_id: requestId } : {})
+        ...(requestId && sameOriginRequest ? { request_id: requestId } : {})
       },
       contexts: {
         turbo: {

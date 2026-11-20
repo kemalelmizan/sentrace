@@ -1,6 +1,6 @@
 import type { ParsedDsn } from "./types.ts";
 
-export const VERSION = "0.1.5";
+export const VERSION = "0.1.6";
 export const SDK_NAME = "sentrace.javascript.browser";
 export const SDK_CLIENT = `sentrace-js/${VERSION}`;
 
@@ -167,7 +167,7 @@ export function isSameOrAllowedOrigin(
   if (!trimmed) {
     return false;
   }
-  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) && !trimmed.startsWith("//")) {
+  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) && !/^[/\\]{2}/.test(trimmed)) {
     return true;
   }
 

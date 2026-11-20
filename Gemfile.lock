@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    sentrace (0.1.5)
+    sentrace (0.1.6)
       mcp (~> 1.0)
       pg (>= 1.4, < 2.0)
       rails (>= 6.1, < 9.0)

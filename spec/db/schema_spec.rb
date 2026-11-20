@@ -43,7 +43,11 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     expect(event_indexes.keys).to contain_exactly(
       "index_sentrace_events_on_project_event_id",
       "index_sentrace_events_on_issue_occurred_at",
-      "index_sentrace_events_on_project_occurred_at"
+      "index_sentrace_events_on_project_occurred_at",
+      "index_sentrace_events_on_received_at",
+      "index_sentrace_events_on_issue_release",
+      "index_sentrace_events_on_issue_platform",
+      "index_sentrace_events_on_request_id"
     )
     expect(event_indexes["index_sentrace_events_on_project_event_id"].unique).to be(true)
     expect(event_indexes["index_sentrace_events_on_issue_occurred_at"].orders).to eq("occurred_at" => :desc)
@@ -65,13 +69,13 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
 
   it "uses ActiveRecord::Migration[6.1] and t.column(..., :timestamptz) without PG 15+ SQL constructs" do
     migrations = Dir.glob(File.expand_path("../../db/migrate/*.rb", __dir__)).sort
-    expect(migrations.size).to eq(6)
+    expect(migrations.size).to eq(7)
 
     migrations.each do |migration_file|
       source = File.read(migration_file)
       expect(source).to include("ActiveRecord::Migration[6.1]")
       expect(source).not_to include("t.timestamptz")
-      expect(source).to include(":timestamptz")
+      expect(source).to include(":timestamptz") if source.include?("create_table")
     end
 
     ruby_sources = Dir.glob(File.expand_path("../../{app,lib}/**/*.rb", __dir__))
@@ -93,7 +97,8 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
       CreateSentraceIssues,
       CreateSentraceEvents,
       CreateSentraceMcpTokens,
-      AddExpiresAtAndScopesToSentraceMcpTokens
+      AddExpiresAtAndScopesToSentraceMcpTokens,
+      AddSecurityAndQueryIndexesToSentraceEvents
     ]
 
     ActiveRecord::Migration.suppress_messages do

@@ -29,6 +29,23 @@ export function generateEventId(): string {
   return fallback;
 }
 
+function safeJsonStringify(value: unknown): string {
+  const ancestors: object[] = [];
+  return JSON.stringify(value, function (_key: string, val: unknown): unknown {
+    if (typeof val !== "object" || val === null) {
+      return val;
+    }
+    while (ancestors.length > 0 && ancestors[ancestors.length - 1] !== this) {
+      ancestors.pop();
+    }
+    if (ancestors.indexOf(val) !== -1) {
+      return "[Circular]";
+    }
+    ancestors.push(val);
+    return val;
+  });
+}
+
 /**
  * Serializes a normalized `SentryEvent` into a standard 3-line Sentry v7 Envelope.
  */
@@ -43,7 +60,7 @@ export function serializeEnvelope(event: SentryEvent, dsn: ParsedDsn): string {
     }
   });
 
-  const payload = JSON.stringify(event);
+  const payload = safeJsonStringify(event);
   const byteLength =
     typeof TextEncoder !== "undefined" ? new TextEncoder().encode(payload).byteLength : payload.length;
   const itemHeader = JSON.stringify({

@@ -11,6 +11,18 @@ function isUnsafeScopeKey(key: string): boolean {
   return key === "__proto__" || key === "constructor" || key === "prototype";
 }
 
+function copySafeRecord<T>(source: Record<string, T> | undefined, target: Record<string, T> = {}): Record<string, T> {
+  if (!source) {
+    return target;
+  }
+  for (const [k, v] of Object.entries(source)) {
+    if (!isUnsafeScopeKey(k)) {
+      target[k] = v;
+    }
+  }
+  return target;
+}
+
 export class Scope implements ScopeLike {
   declare private tags: Record<string, string>;
   declare private user: User | null;
@@ -55,7 +67,7 @@ export class Scope implements ScopeLike {
   }
 
   setUser(user: User | null): this {
-    this.user = user ? { ...user } : null;
+    this.user = user ? (copySafeRecord(user as Record<string, unknown>) as User) : null;
     return this;
   }
 
@@ -202,12 +214,12 @@ export class Scope implements ScopeLike {
   }
 
   applyToEvent(event: SentryEvent, maxBreadcrumbs: number): SentryEvent {
-    const mergedTags = { ...this.tags, ...(event.tags ? event.tags : {}) };
+    const mergedTags = copySafeRecord(event.tags, copySafeRecord(this.tags));
     if (Object.keys(mergedTags).length > 0) {
       event.tags = mergedTags;
     }
 
-    const mergedExtra = { ...this.extra, ...(event.extra ? event.extra : {}) };
+    const mergedExtra = copySafeRecord(event.extra, copySafeRecord(this.extra));
     if (Object.keys(mergedExtra).length > 0) {
       event.extra = mergedExtra;
     }
@@ -215,14 +227,14 @@ export class Scope implements ScopeLike {
     const mergedContexts: Record<string, Record<string, unknown>> = {};
     for (const [k, v] of Object.entries(this.contexts)) {
       if (!isUnsafeScopeKey(k)) {
-        mergedContexts[k] = { ...v };
+        mergedContexts[k] = copySafeRecord(v);
       }
     }
     if (event.contexts) {
       for (const [k, v] of Object.entries(event.contexts)) {
         if (!isUnsafeScopeKey(k) && v && typeof v === "object") {
           const existing = Object.prototype.hasOwnProperty.call(mergedContexts, k) ? mergedContexts[k] : undefined;
-          mergedContexts[k] = { ...(existing ? existing : {}), ...v };
+          mergedContexts[k] = copySafeRecord(v, existing ? copySafeRecord(existing) : {});
         }
       }
     }
@@ -231,7 +243,7 @@ export class Scope implements ScopeLike {
     }
 
     if (event.user === undefined && this.user) {
-      event.user = { ...this.user };
+      event.user = copySafeRecord(this.user as Record<string, unknown>) as User;
     }
 
     if (!event.level && this.level) {

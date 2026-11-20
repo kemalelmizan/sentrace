@@ -29,7 +29,11 @@ module Sentrace
           return false if Thread.current[CaptureDispatcher::REENTRANCY_KEY]
 
           path = req&.path.to_s
+          mount_path = cached_mount_path
           return false if path.include?("/sentrace/api/") || path.include?("/sentrace/mcp")
+          if !mount_path.empty? && (path.include?("#{mount_path}/api/") || path.include?("#{mount_path}/mcp"))
+            return false
+          end
 
           full_url = build_raw_url(http, req)
           !internal_sentrace_url?(full_url)
@@ -113,6 +117,12 @@ module Sentrace
             port_part = port && port != default_port ? ":#{port}" : ""
             normalized_path = raw_path.start_with?("/") ? raw_path : "/#{raw_path}"
             "#{scheme}://#{host}#{port_part}#{normalized_path}"
+          end
+
+          def cached_mount_path
+            @mount_path ||= FrontendDsnResolver.detect_engine_mount_path.to_s.chomp("/")
+          rescue StandardError
+            "/sentrace"
           end
 
           def internal_sentrace_url?(raw_url)

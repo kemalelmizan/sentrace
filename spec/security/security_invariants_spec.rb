@@ -933,4 +933,66 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
       }
     expect(response).to have_http_status(:forbidden)
   end
+
+  it "enforces 64-bit integer/timestamp bounds in LocalBackend, scoped internal_authenticator, total event_data budget, and concurrent Grouper rollback (P2)" do
+    # 1. LocalBackend rejects > 64-bit integers and out-of-range timestamps with McpInvalidParamsError (not 500)
+    backend = Sentrace::Mcp::LocalBackend.new
+    expect { backend.get_issue(issue_id: 2**63) }.to raise_error(Sentrace::McpInvalidParamsError)
+    expect { backend.list_issues(project_id: 2**63) }.to raise_error(Sentrace::McpInvalidParamsError)
+    expect { backend.get_event(event_id: (2**63).to_s) }.to raise_error(Sentrace::McpInvalidParamsError)
+    expect { backend.list_issues(since: "99999-01-01T00:00:00Z") }.to raise_error(Sentrace::McpInvalidParamsError)
+
+    # 2. Scoped internal_authenticator enforces read_only vs admin scopes
+    Sentrace.configure do |c|
+      c.internal_authenticator = lambda do |req|
+        case req.headers["X-Role"]
+        when "viewer" then { read_only: true }
+        when "admin" then { admin: true }
+        else false
+        end
+      end
+    end
+    get "https://app.example.com/sentrace/internal/projects", headers: { "X-Role" => "viewer" }
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body["projects"].first["public_key"]).to be_nil
+    post "https://app.example.com/sentrace/internal/projects", params: { slug: "blocked-viewer" }, headers: { "X-Role" => "viewer" }
+    expect(response).to have_http_status(:forbidden)
+    post "https://app.example.com/sentrace/internal/projects", params: { slug: "allowed-admin" }, headers: { "X-Role" => "admin" }
+    expect(response).to have_http_status(:created)
+
+    # 3. Total event_data budget trims oversized payloads cleanly
+    Sentrace.reset_configuration!
+    Sentrace.configure { |c| c.max_event_data_bytes = 512 }
+    res = Sentrace::Ingestion::Processor.ingest_event(
+      {
+        "event_id" => "40404040404040404040404040404040",
+        "message" => "Budget trim test",
+        "breadcrumbs" => Array.new(10) { |i| { "category" => "log", "message" => "crumb-#{i}-#{'x' * 120}" } },
+        "contexts" => { "ctx" => { "blob" => "y" * 400 } }
+      },
+      project: project
+    )
+    trimmed_ev = Sentrace::Event.find(res.event_record_id)
+    expect(JSON.generate(trimmed_ev.event_data).bytesize).to be <= 512
+
+    # 4. Concurrent duplicate event_id with a different fingerprint rolls back the phantom zero-event issue
+    Sentrace.reset_configuration!
+    dup_id = "50505050505050505050505050505050"
+    Sentrace::Ingestion::Processor.ingest_event(
+      { "event_id" => dup_id, "fingerprint" => [ "first-fp" ], "message" => "First" },
+      project: project
+    )
+    issues_before = project.issues.count
+    norm_dup = Sentrace::Ingestion::EventNormalizer.normalize(
+      { "event_id" => dup_id, "fingerprint" => [ "second-fp" ], "message" => "Second" }
+    )
+    dup_res = Sentrace::Issues::Grouper.persist!(
+      project_id: project.id,
+      normalized_event: norm_dup,
+      fingerprint: Sentrace::Issues::Fingerprint.compute(norm_dup)
+    )
+    expect(dup_res.duplicate).to be(true)
+    expect(project.issues.count).to eq(issues_before)
+    expect(project.issues.where(event_count: 0)).to be_empty
+  end
 end

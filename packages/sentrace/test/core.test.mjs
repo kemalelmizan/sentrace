@@ -20,7 +20,7 @@ test("parseDsn, formatPublicDsn, buildEnvelopeEndpoint, and scrubUrl handle Sent
   assert.equal(formatPublicDsn(dsn), "https://pub_abc123@errors.example.com:8443/sentrace/42");
   assert.equal(
     buildEnvelopeEndpoint(dsn),
-    "https://errors.example.com:8443/sentrace/api/42/envelope?sentry_key=pub_abc123&sentry_version=7&sentry_client=sentrace-js%2F0.1.5"
+    "https://errors.example.com:8443/sentrace/api/42/envelope?sentry_key=pub_abc123&sentry_version=7&sentry_client=sentrace-js%2F0.1.6"
   );
 
   assert.equal(parseDsn("not-a-dsn"), null);
@@ -207,6 +207,21 @@ test("Scope isolates clones, bounds breadcrumbs, and serializes valid 3-line Sen
     const fallbackRes = await transport.send(rawEnvelope);
     assert.equal(beaconCalled, true);
     assert.equal(fallbackRes.statusCode, 200);
+
+    // Verify circular-reference safety in serializeEnvelope and backslash origin guard
+    const circularObj = { name: "root" };
+    circularObj.self = circularObj;
+    const circularEnv = serializeEnvelope(
+      {
+        event_id: eventId,
+        timestamp: "2026-11-16T12:00:00.000Z",
+        platform: "javascript",
+        extra: { loop: circularObj }
+      },
+      dsn
+    );
+    const circularPayload = JSON.parse(circularEnv.trimEnd().split("\n")[2]);
+    assert.equal(circularPayload.extra.loop.self, "[Circular]");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalNav !== undefined) {

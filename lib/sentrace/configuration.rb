@@ -56,6 +56,7 @@ module Sentrace
       max_tag_value_bytes
       max_context_entries
       max_context_bytes
+      max_event_data_bytes
       remote_timeout
       remote_ping_timeout
     ].freeze
@@ -108,6 +109,7 @@ module Sentrace
       :max_tag_value_bytes,
       :max_context_entries,
       :max_context_bytes,
+      :max_event_data_bytes,
       :redact_fields,
       :allow_fields,
       :retain_user_fields,
@@ -159,6 +161,7 @@ module Sentrace
       @max_tag_value_bytes = 256
       @max_context_entries = 16
       @max_context_bytes = 8.kilobytes
+      @max_event_data_bytes = 32.kilobytes
       @redact_fields = DEFAULT_REDACT_FIELDS.dup
       @allow_fields = []
       @retain_user_fields = []

@@ -120,6 +120,7 @@ export class BrowserClient {
     if (useRails) {
       this.teardowns.push(
         installRailsTurboInstrumentation({
+          endpointUrl: this.endpointUrl,
           redactFields: this.redactFields,
           allowFields: this.allowFields,
           onBreadcrumb: (crumb) => {

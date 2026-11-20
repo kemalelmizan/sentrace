@@ -1,7 +1,7 @@
 import { getGlobalObject } from "./dsn.ts";
 import type { Transport, TransportMakeRequestResponse } from "./types.ts";
 
-export const SENTRACE_INTERNAL_FETCH_FLAG = "__sentraceInternalRequest";
+export const SENTRACE_INTERNAL_FETCH_FLAG: unique symbol = Symbol("sentraceInternalRequest");
 
 export function createBrowserTransport(endpointUrl: string): Transport {
   const pending = new Set<Promise<unknown>>();
@@ -40,7 +40,8 @@ export function createBrowserTransport(endpointUrl: string): Transport {
         "Content-Type": "text/plain;charset=UTF-8"
       },
       keepalive: true,
-      credentials: "omit"
+      credentials: "omit",
+      referrerPolicy: "no-referrer"
     };
     Object.defineProperty(initOptions, SENTRACE_INTERNAL_FETCH_FLAG, {
       value: true,

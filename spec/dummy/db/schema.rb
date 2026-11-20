@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -28,9 +28,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_000001) do
     t.string "culprit", limit: 512
     t.jsonb "event_data", default: {}, null: false
     t.timestamptz "created_at", null: false
+    t.index "(((event_data -> 'tags'::text) ->> 'request_id'::text))", name: "index_sentrace_events_on_request_id", where: "(((event_data -> 'tags'::text) ->> 'request_id'::text) IS NOT NULL)"
     t.index ["issue_id", "occurred_at"], name: "index_sentrace_events_on_issue_occurred_at", order: { occurred_at: :desc }
+    t.index ["issue_id", "platform"], name: "index_sentrace_events_on_issue_platform", where: "(platform IS NOT NULL)"
+    t.index ["issue_id", "release"], name: "index_sentrace_events_on_issue_release", where: "(release IS NOT NULL)"
     t.index ["project_id", "event_id"], name: "index_sentrace_events_on_project_event_id", unique: true
     t.index ["project_id", "occurred_at"], name: "index_sentrace_events_on_project_occurred_at", order: { occurred_at: :desc }
+    t.index ["received_at"], name: "index_sentrace_events_on_received_at"
   end
 
   create_table "sentrace_issues", force: :cascade do |t|

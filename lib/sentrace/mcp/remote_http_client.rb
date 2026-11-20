@@ -482,12 +482,17 @@ module Sentrace
           status_code = nil
           response_headers = nil
           body_buffer = "".b
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout.to_f
 
           http.start do |conn|
             conn.request(request) do |response|
               status_code = response.code.to_i
               response_headers = response.each_header.to_h
               response.read_body do |chunk|
+                if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+                  raise Timeout::Error, "execution expired"
+                end
+
                 body_buffer << chunk.b
                 if body_buffer.bytesize > MAX_REMOTE_RESPONSE_BYTES
                   raise McpRemoteError.new(

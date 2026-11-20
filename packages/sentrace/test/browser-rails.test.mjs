@@ -723,6 +723,13 @@ test("window.onerror scrubs fallbackFrame filename and stack frames honor custom
     const stackFrame = mem.envelopes[1].event.exception.values[0].stacktrace.frames[0];
     assert.equal(stackFrame.filename, "https://shop.example.com/app.js?custom_secret=[REDACTED]&ok=2");
 
+    // Verify backslash protocol-relative URLs are rejected by isSameOrAllowedOrigin
+    const { isSameOrAllowedOrigin } = await import("../src/dsn.ts");
+    assert.equal(
+      isSameOrAllowedOrigin("\\\\evil.example.com/x", "https://shop.example.com/sentrace/api/1/envelope", "https://shop.example.com/"),
+      false
+    );
+
     await Sentrace.close();
   } finally {
     globalThis.window = prevWin;

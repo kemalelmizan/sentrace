@@ -36,6 +36,10 @@ module Sentrace
         render json: { error: err.message }, status: 422
       end
 
+      rescue_from ActiveModel::RangeError do
+        render json: { error: "Parameter value out of range" }, status: 422
+      end
+
       private
         def verify_https_or_loopback!
           unless RequestSecurity.https_or_loopback?(request)
@@ -122,7 +126,10 @@ module Sentrace
 
           custom_auth = config.internal_authenticator
           if custom_auth
-            return if custom_auth.call(request)
+            auth_result = custom_auth.arity == 2 || custom_auth.arity < 0 ? custom_auth.call(request, required_internal_scope) : custom_auth.call(request)
+            if apply_custom_auth_result!(auth_result)
+              return
+            end
 
             if record_auth_failure_and_check_throttled?(client_ip, config)
               return
@@ -169,19 +176,53 @@ module Sentrace
           render json: { error: "Rate limit exceeded" }, status: :too_many_requests
         end
 
+        def apply_custom_auth_result!(auth_result)
+          return false unless auth_result
+
+          if auth_result.is_a?(Hash)
+            scopes =
+              if auth_result[:read_only] == true || auth_result["read_only"] == true
+                %w[read]
+              elsif auth_result[:admin] == true || auth_result["admin"] == true
+                %w[read write admin]
+              else
+                raw_scopes = auth_result[:scopes] || auth_result["scopes"]
+                Array(raw_scopes.is_a?(String) ? raw_scopes.split(",") : raw_scopes)
+                  .map { |s| s.to_s.strip.downcase }
+                  .reject(&:empty?)
+              end
+            @current_internal_scopes = scopes
+          else
+            @current_internal_scopes = %w[read write admin]
+          end
+          true
+        end
+
+        def required_internal_scope
+          if self.class.name == "Sentrace::Internal::ProjectsController" && %w[create update destroy].include?(action_name)
+            :admin
+          elsif request.get? || request.head? || request.options?
+            :read
+          else
+            :write
+          end
+        end
+
         def require_write_scope!
-          if @current_mcp_token&.read_only?
-            render json: { error: "Forbidden: read-only token cannot mutate resources" }, status: :forbidden
+          if @current_mcp_token&.read_only? || (@current_internal_scopes && !@current_internal_scopes.include?("write") && !@current_internal_scopes.include?("admin"))
+            render json: { error: "Forbidden: read-only credentials cannot mutate resources" }, status: :forbidden
           end
         end
 
         def require_admin_scope!
-          if @current_mcp_token && !@current_mcp_token.admin?
+          if (@current_mcp_token && !@current_mcp_token.admin?) || (@current_internal_scopes && !@current_internal_scopes.include?("admin"))
             render json: { error: "Forbidden: admin scope is required to mutate projects" }, status: :forbidden
           end
         end
 
         def can_view_project_credentials?
+          return @current_internal_scopes.include?("admin") if @current_internal_scopes
+
           @current_mcp_token.nil? || @current_mcp_token.admin?
         end
 

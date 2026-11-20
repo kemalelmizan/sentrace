@@ -2,6 +2,7 @@ module Sentrace
   module Mcp
     class EnvironmentRouter
       MUTATION_OPERATIONS = %i[update_issue_status].freeze
+      MAX_FEDERATED_CONCURRENCY = 8
 
       def initialize(config: Sentrace.configuration, remote_client: RemoteHttpClient.new)
         @config = config
@@ -13,13 +14,9 @@ module Sentrace
         use_threads = env_defs.size > 1
 
         envs = if use_threads
-          threads = env_defs.map do |env_def|
-            Thread.new(env_def) do |target|
-              Thread.current.report_on_exception = false
-              build_environment_entry(target, in_worker_thread: true)
-            end
+          run_bounded_threads(env_defs) do |target|
+            build_environment_entry(target, in_worker_thread: true)
           end
-          threads.map(&:value)
         else
           env_defs.map { |env_def| build_environment_entry(env_def, in_worker_thread: false) }
         end
@@ -103,52 +100,77 @@ module Sentrace
         end
 
         def execute_federated(targets, op_sym, **kwargs)
-          threads = targets.map do |env_def|
-            Thread.new(env_def) do |target|
+          outcomes = run_bounded_threads(targets) do |target|
+            payload = execute_single(target, op_sym, in_worker_thread: true, **kwargs)
+            { ok: true, env_name: target.name.to_s, payload: payload }
+          rescue McpRemoteError => e
+            {
+              ok: false,
+              error: {
+                "environment" => e.environment,
+                "category" => e.category,
+                "message" => e.message
+              }
+            }
+          rescue McpNotFoundError => e
+            {
+              ok: false,
+              error: {
+                "environment" => target.name.to_s,
+                "category" => "not_found",
+                "message" => e.message
+              }
+            }
+          rescue McpInvalidParamsError => e
+            {
+              ok: false,
+              error: {
+                "environment" => target.name.to_s,
+                "category" => "invalid_params",
+                "message" => e.message
+              }
+            }
+          rescue StandardError => e
+            {
+              ok: false,
+              error: {
+                "environment" => target.name.to_s,
+                "category" => "internal_error",
+                "message" => "Failed querying environment #{target.name}: #{e.class}"
+              }
+            }
+          end
+
+          merge_outcomes(targets, op_sym, outcomes, **kwargs)
+        end
+
+        def run_bounded_threads(items, &block)
+          return [] if items.empty?
+
+          results = Array.new(items.size)
+          queue = Queue.new
+          items.each_with_index { |item, idx| queue << [ item, idx ] }
+
+          worker_count = [ items.size, MAX_FEDERATED_CONCURRENCY ].min
+          workers = Array.new(worker_count) do
+            Thread.new do
               Thread.current.report_on_exception = false
-              payload = execute_single(target, op_sym, in_worker_thread: true, **kwargs)
-              { ok: true, env_name: target.name.to_s, payload: payload }
-            rescue McpRemoteError => e
-              {
-                ok: false,
-                error: {
-                  "environment" => e.environment,
-                  "category" => e.category,
-                  "message" => e.message
-                }
-              }
-            rescue McpNotFoundError => e
-              {
-                ok: false,
-                error: {
-                  "environment" => target.name.to_s,
-                  "category" => "not_found",
-                  "message" => e.message
-                }
-              }
-            rescue McpInvalidParamsError => e
-              {
-                ok: false,
-                error: {
-                  "environment" => target.name.to_s,
-                  "category" => "invalid_params",
-                  "message" => e.message
-                }
-              }
-            rescue StandardError => e
-              {
-                ok: false,
-                error: {
-                  "environment" => target.name.to_s,
-                  "category" => "internal_error",
-                  "message" => "Failed querying environment #{target.name}: #{e.class}"
-                }
-              }
+              loop do
+                pair = begin
+                  queue.pop(true)
+                rescue ThreadError
+                  nil
+                end
+                break unless pair
+
+                item, idx = pair
+                results[idx] = block.call(item)
+              end
             end
           end
 
-          outcomes = threads.map(&:value)
-          merge_outcomes(targets, op_sym, outcomes, **kwargs)
+          workers.each(&:join)
+          results
         end
 
         def merge_outcomes(targets, op_sym, outcomes, **kwargs)

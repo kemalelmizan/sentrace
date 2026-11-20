@@ -98,7 +98,8 @@ module Sentrace
     end
 
     def to_s
-      userinfo = secret_key ? "#{public_key}:#{secret_key}" : public_key
+      encoded_pub = URI.encode_www_form_component(public_key)
+      userinfo = secret_key ? "#{encoded_pub}:#{URI.encode_www_form_component(secret_key)}" : encoded_pub
       "#{scheme}://#{userinfo}@#{authority_host}#{path_prefix}/#{project_id}"
     end
 
