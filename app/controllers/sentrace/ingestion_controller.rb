@@ -35,9 +35,9 @@ module Sentrace
       # Read route param directly from path_parameters to avoid triggering Rails'
       # ActionDispatch::Http::Parameters body parser before size, rate, and auth gates.
       project_id = parse_positive_project_id(request.path_parameters[:project_id])
+      client_ip = RequestSecurity.rate_limit_ip(request, trust_forwarded_headers: config.trust_forwarded_headers).presence || "unknown"
 
       if config.ingestion_rate_limit_per_minute
-        client_ip = RequestSecurity.client_ip(request, trust_forwarded_headers: config.trust_forwarded_headers).presence || "unknown"
         rate_result = RateLimiter.check!(
           bucket: "ingestion_ip",
           identifier: client_ip,
@@ -97,13 +97,17 @@ module Sentrace
         project: matched_key.project_id,
         config: config,
         ingestion_source: "http_dsn",
-        trusted_http_key: matched_key.secret_digest.present?
+        trusted_http_key: matched_key.secret_digest.present?,
+        before_persist: ->(event_count) { enforce_additional_events_rate_limit!(client_ip, matched_key.project_id, event_count - 1, config) }
       )
 
       render json: { id: result.primary_event_id }, status: :ok
+    rescue RateLimitExceededError => e
+      response.set_header("Retry-After", e.retry_after.to_s)
+      render json: { error: "Rate limit exceeded" }, status: :too_many_requests
     rescue PayloadTooLargeError
       render json: { error: "Payload too large" }, status: 413
-    rescue EnvelopeParseError
+    rescue EnvelopeParseError, ActionController::BadRequest, Rack::QueryParser::InvalidParameterError, Rack::QueryParser::ParameterTypeError
       render json: { error: "Malformed envelope" }, status: :bad_request
     rescue StandardError => e
       Rails.logger&.error("[Sentrace] Ingestion error (#{e.class})")
@@ -221,6 +225,30 @@ module Sentrace
         response.set_header("Retry-After", proj_result[:retry_after].to_s)
         render json: { error: "Rate limit exceeded" }, status: :too_many_requests
         true
+      end
+
+      def enforce_additional_events_rate_limit!(client_ip, project_id, extra_cost, config)
+        return if extra_cost <= 0
+
+        if config.ingestion_rate_limit_per_minute
+          ip_res = RateLimiter.check!(
+            bucket: "ingestion_ip",
+            identifier: client_ip,
+            limit: config.ingestion_rate_limit_per_minute,
+            cost: extra_cost
+          )
+          raise RateLimitExceededError.new(retry_after: ip_res[:retry_after]) unless ip_res[:allowed]
+        end
+
+        if config.ingestion_project_rate_limit_per_minute
+          proj_res = RateLimiter.check!(
+            bucket: "ingestion_project",
+            identifier: project_id.to_s,
+            limit: config.ingestion_project_rate_limit_per_minute,
+            cost: extra_cost
+          )
+          raise RateLimitExceededError.new(retry_after: proj_res[:retry_after]) unless proj_res[:allowed]
+        end
       end
 
       def parse_positive_project_id(raw_project_id)

@@ -5,6 +5,15 @@ module Sentrace
   class EnvelopeParseError < Error; end
   class PayloadTooLargeError < Error; end
 
+  class RateLimitExceededError < Error
+    attr_reader :retry_after
+
+    def initialize(message = "Rate limit exceeded", retry_after: 60)
+      super(message)
+      @retry_after = retry_after.to_i
+    end
+  end
+
   class McpError < Error; end
   class McpInvalidParamsError < McpError; end
   class McpNotFoundError < McpError; end

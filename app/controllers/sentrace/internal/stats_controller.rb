@@ -4,6 +4,10 @@ module Sentrace
       MAX_STATS_DAYS = 365
 
       def show
+        if @current_mcp_token&.project_id
+          return render json: { error: "Forbidden: project-scoped token cannot access global storage stats" }, status: :forbidden
+        end
+
         raw_days = scalar_param(:days)
         days = raw_days.nil? || raw_days.to_s.strip.empty? ? 30 : parse_days!(raw_days)
         render json: StorageStats.collect(days: days)

@@ -995,4 +995,477 @@ RSpec.describe "Sentrace Security Invariants (SPEC.md §13)", type: :request do
     expect(project.issues.count).to eq(issues_before)
     expect(project.issues.where(event_count: 0)).to be_empty
   end
+
+  describe "Round 3 AI-threat security hardening (P0-P2)" do
+    it "throttles in-process capture floods, excludes scanner exceptions, clamps all future clock skew, and blocks read-only internal_authenticator issue mutations (P0-1..P0-3)" do
+      # P0-1: Scanner exceptions excluded by default + in_process_rate_limit_per_minute enforced
+      default_cfg = Sentrace::Configuration.new
+      expect(default_cfg.excluded_exceptions).to include(
+        "ActionDispatch::RemoteIp::IpSpoofAttackError",
+        "ActionDispatch::Http::MimeNegotiation::InvalidType",
+        "Rack::Multipart::Error"
+      )
+
+      Sentrace.with_configuration(
+        enabled: true,
+        project_id: project.id,
+        capture_dispatch: :inline,
+        in_process_rate_limit_per_minute: 2,
+        reset_rate_limiter: true
+      ) do
+        expect(Sentrace.capture_message("In-process msg 1")).to be_present
+        expect(Sentrace.capture_message("In-process msg 2")).to be_present
+        expect(Sentrace.capture_message("In-process msg 3 throttled")).to be_nil
+      end
+
+      # P0-2: Both in_process and http_dsn clamp future timestamps to <= received_at;
+      # http_dsn remains strictly clamped even if max_future_clock_skew is raised for internal workers
+      ref_time = Time.utc(2026, 11, 20, 15, 0, 0)
+      Sentrace.with_configuration(max_future_clock_skew: 0.seconds) do
+        norm_in_proc = Sentrace::Ingestion::EventNormalizer.normalize(
+          { "event_id" => "60606060606060606060606060606061", "timestamp" => (ref_time + 3.minutes).iso8601, "message" => "skew1" },
+          received_at: ref_time,
+          ingestion_source: "in_process"
+        )
+        expect(norm_in_proc.occurred_at).to eq(ref_time)
+      end
+
+      Sentrace.with_configuration(max_future_clock_skew: 2.minutes) do
+        norm_http = Sentrace::Ingestion::EventNormalizer.normalize(
+          { "event_id" => "60606060606060606060606060606062", "timestamp" => (ref_time + 30.seconds).iso8601, "message" => "skew2" },
+          received_at: ref_time,
+          ingestion_source: "http_dsn"
+        )
+        expect(norm_http.occurred_at).to eq(ref_time)
+      end
+
+      # P0-3: Read-only internal_authenticator CANNOT mutate issue status via PATCH /internal/issues/:id
+      issue_res = Sentrace::Ingestion::Processor.ingest_event(
+        { "event_id" => "60606060606060606060606060606063", "message" => "Protected issue" },
+        project: project
+      )
+      target_issue = Sentrace::Issue.find(issue_res.issue_id)
+
+      Sentrace.configure do |c|
+        c.internal_authenticator = ->(req) { req.headers["X-Internal-Role"] == "writer" ? { scopes: %w[read write] } : { read_only: true } }
+      end
+
+      patch "https://app.example.com/sentrace/internal/issues/#{target_issue.id}",
+        params: JSON.generate(status: "ignored"),
+        headers: { "Content-Type" => "application/json", "Origin" => "https://app.example.com", "X-Internal-Role" => "viewer" }
+      expect(response).to have_http_status(:forbidden)
+      expect(target_issue.reload.status).to eq("unresolved")
+
+      patch "https://app.example.com/sentrace/internal/issues/#{target_issue.id}",
+        params: JSON.generate(status: "ignored"),
+        headers: { "Content-Type" => "application/json", "Origin" => "https://app.example.com", "X-Internal-Role" => "writer" }
+      expect(response).to have_http_status(:ok)
+      expect(target_issue.reload.status).to eq("ignored")
+    end
+
+    it "bounds adversarial breadcrumb/context trees, post-scrub sizes, and strict max_event_data_bytes budget (P0-4)" do
+      wide_leaf = (0...16).to_h { |k| [ "k#{k}", "v" * 200 ] }
+      mid_level = (0...16).to_h { |j| [ "m#{j}", wide_leaf ] }
+      top_data = (0...16).to_h { |i| [ "t#{i}", mid_level ] }
+      adversarial_crumbs = Array.new(20) { |idx| { "category" => "flood", "message" => "c#{idx}", "data" => top_data } }
+
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      Sentrace.with_configuration(max_event_data_bytes: 4.kilobytes, max_breadcrumbs_bytes: 2.kilobytes) do
+        res = Sentrace::Ingestion::Processor.ingest_event(
+          {
+            "event_id" => "70707070707070707070707070707070",
+            "message" => ("Bearer tok12345678 " * 300),
+            "breadcrumbs" => adversarial_crumbs,
+            "tags" => (0...32).to_h { |i| [ "tag_#{i}", "Bearer tok12345678 " * 20 ] },
+            "request" => { "url" => "https://app.example.com/#{'a' * 900}", "method" => "POST" },
+            "user" => { "id" => "user-42" },
+            "exception" => {
+              "values" => [
+                {
+                  "type" => "BudgetOverflowError",
+                  "value" => ("x" * 4_000),
+                  "stacktrace" => {
+                    "frames" => Array.new(20) { |f| { "filename" => "app/services/#{'f' * 120}_#{f}.rb", "function" => "call_#{'m' * 100}", "lineno" => f, "in_app" => true } }
+                  }
+                }
+              ]
+            }
+          },
+          project: project
+        )
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+        expect(elapsed).to be < 0.25
+
+        stored = Sentrace::Event.find(res.event_record_id)
+        expect(JSON.generate(stored.event_data).bytesize).to be <= 4.kilobytes
+      end
+    end
+
+    it "redacts traversal/dotfile/credential stack frames and culprits, demotes untrusted OS-absolute http_dsn frames, and defaults StdioRunner to read-only (P1-1, P1-2)" do
+      res = Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "80808080808080808080808080808080",
+          "culprit" => "../../.env in load_secrets",
+          "exception" => {
+            "values" => [
+              {
+                "type" => "SteerError",
+                "value" => "Check frame paths",
+                "stacktrace" => {
+                  "frames" => [
+                    { "filename" => "../../.env.production", "function" => "read", "lineno" => 1, "in_app" => true },
+                    { "filename" => "~/.ssh/id_rsa", "function" => "load", "lineno" => 2, "in_app" => true },
+                    { "filename" => "/etc/passwd", "function" => "open", "lineno" => 3, "in_app" => true },
+                    { "filename" => "app/../../.claude/settings.json", "function" => "parse", "lineno" => 4, "in_app" => true },
+                    { "filename" => "config/master.key", "function" => "key", "lineno" => 5, "in_app" => true },
+                    { "filename" => "app/%2e%2e/%2e%2e/etc/shadow", "function" => "shadow", "lineno" => 6, "in_app" => true },
+                    { "filename" => "/app/app/controllers/orders_controller.rb", "function" => "create", "lineno" => 10, "in_app" => true },
+                    { "filename" => "https://shop.example.com/assets/app.js", "function" => "onClick", "lineno" => 25, "in_app" => true }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        project: project,
+        ingestion_source: "http_dsn",
+        trusted_http_key: false
+      )
+
+      ev = Sentrace::Event.find(res.event_record_id)
+      expect(ev.culprit).to eq("[REDACTED_PATH] in load_secrets")
+      frames = ev.event_data.dig("exception", "frames")
+      frames[0..5].each do |frame|
+        expect(frame["filename"]).to eq("[REDACTED_PATH]")
+        expect(frame["in_app"]).to be(false)
+      end
+      # Untrusted http_dsn OS-absolute path is demoted to in_app: false, while https:// browser asset remains in_app: true
+      expect(frames[6]["filename"]).to eq("/app/app/controllers/orders_controller.rb")
+      expect(frames[6]["in_app"]).to be(false)
+      expect(frames[7]["in_app"]).to be(true)
+
+      # P1-2: StdioRunner defaults to read_only: true unless SENTRACE_MCP_ALLOW_WRITE=true
+      prev_ro = ENV["SENTRACE_MCP_READ_ONLY"]
+      prev_aw = ENV["SENTRACE_MCP_ALLOW_WRITE"]
+      begin
+        ENV.delete("SENTRACE_MCP_READ_ONLY")
+        ENV.delete("SENTRACE_MCP_ALLOW_WRITE")
+
+        rpc_frames = [
+          { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "sec", version: "1.0" } } },
+          { jsonrpc: "2.0", method: "notifications/initialized" },
+          { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "update_issue_status", arguments: { issue_id: res.issue_id, status: "ignored" } } }
+        ]
+        out_io = StringIO.new
+        Sentrace::Mcp::StdioRunner.run(
+          input: StringIO.new(rpc_frames.map { |f| JSON.generate(f) }.join("\n") + "\n"),
+          output: out_io,
+          err_output: StringIO.new,
+          isolate_stdout_logs: false
+        )
+        responses = out_io.string.lines.map(&:strip).reject(&:empty?).map { |l| JSON.parse(l) }
+        call_res = responses.find { |r| r["id"] == 2 }["result"]
+        expect(call_res["isError"]).to be(true)
+        expect(call_res.dig("structuredContent", "category")).to eq("forbidden")
+
+        ENV["SENTRACE_MCP_ALLOW_WRITE"] = "true"
+        expect(Sentrace::Mcp::StdioRunner.send(:env_read_only?)).to be(false)
+        ENV["SENTRACE_MCP_READ_ONLY"] = "true"
+        expect(Sentrace::Mcp::StdioRunner.send(:env_read_only?)).to be(true)
+      ensure
+        prev_ro.nil? ? ENV.delete("SENTRACE_MCP_READ_ONLY") : ENV["SENTRACE_MCP_READ_ONLY"] = prev_ro
+        prev_aw.nil? ? ENV.delete("SENTRACE_MCP_ALLOW_WRITE") : ENV["SENTRACE_MCP_ALLOW_WRITE"] = prev_aw
+      end
+    end
+
+    it "hardens federated MCP sorting/correlation/cursors, scrubs remote secrets, sends Accept-Encoding: identity, and rejects compressed remote payloads (P1-3, P1-6)" do
+      captured_headers = nil
+      remote_client = Sentrace::Mcp::RemoteHttpClient.new(
+        http_requester: lambda do |headers:, **_rest|
+          captured_headers = headers
+          Sentrace::Mcp::RemoteHttpClient::HttpResponse.new(
+            status: 200,
+            headers: {},
+            body: JSON.generate(
+              jsonrpc: "2.0",
+              id: "1",
+              result: {
+                isError: false,
+                structuredContent: {
+                  "environment" => "staging",
+                  "issues" => [
+                    {
+                      "id" => 999,
+                      "fingerprint" => "shared-fp-fed",
+                      "exception_type" => "RogueSortHijack",
+                      "message" => "Poisoned staging summary Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlMTIzNDU2",
+                      "last_seen_at" => "~9999-not-a-timestamp",
+                      "event_count" => 5
+                    }
+                  ]
+                }
+              }
+            )
+          )
+        end
+      )
+
+      prod_client_router_cfg = Sentrace::Configuration.new.tap do |c|
+        c.environments = {
+          "prod-us-east": { transport: :local },
+          staging: { transport: :http, url: "https://staging.example.com/sentrace/mcp", token: "snt_mcp_staging_secret_token_123456", read_only: true }
+        }
+      end
+
+      prod_res = Sentrace::Ingestion::Processor.ingest_event(
+        {
+          "event_id" => "90909090909090909090909090909091",
+          "timestamp" => "2026-11-20T12:00:00Z",
+          "fingerprint" => [ "shared-fp-fed" ],
+          "exception" => { "values" => [ { "type" => "OrderError", "value" => "Real prod failure" } ] }
+        },
+        project: project,
+        received_at: Time.utc(2026, 11, 20, 12, 0, 0)
+      )
+      prod_issue = Sentrace::Issue.find(prod_res.issue_id)
+      # Force matching fingerprint for cross-env correlation test
+      prod_issue.update_columns(fingerprint: "shared-fp-fed")
+
+      router = Sentrace::Mcp::EnvironmentRouter.new(config: prod_client_router_cfg, remote_client: remote_client)
+      expect {
+        router.route(:list_issues, environment: "all", cursor: "opaque_cursor")
+      }.to raise_error(Sentrace::McpInvalidParamsError, /cursor/)
+
+      federated = router.route(:list_issues, environment: "all")
+      expect(captured_headers["Accept-Encoding"]).to eq("identity")
+      # Valid production timestamp sorts ABOVE malformed remote timestamp (nil -> epoch 0.0)
+      expect(federated["issues"].first["environment"]).to eq("prod-us-east")
+      expect(federated["issues"].last["last_seen_at"]).to be_nil
+      expect(federated["issues"].last["message"]).to include("Bearer [REDACTED]")
+      # prod-us-east is recognized as production representative in fingerprint_correlations
+      corr = federated["fingerprint_correlations"].find { |c| c["fingerprint"] == "shared-fp-fed" }
+      expect(corr["exception_type"]).to eq("OrderError")
+      expect(corr["message"]).to eq("Real prod failure")
+
+      # P1-6: Compressed remote Content-Encoding is rejected before parsing; straddling token in remote error is scrubbed
+      compressed_client = Sentrace::Mcp::RemoteHttpClient.new(
+        http_requester: ->(**_args) {
+          Sentrace::Mcp::RemoteHttpClient::HttpResponse.new(
+            status: 200,
+            headers: { "Content-Encoding" => "gzip" },
+            body: "{}"
+          )
+        }
+      )
+      expect {
+        compressed_client.call_environment(prod_client_router_cfg.environments[:staging], :list_issues)
+      }.to raise_error(Sentrace::McpRemoteError, /Content-Encoding/)
+
+      straddle_msg = ("x" * 500) + "snt_mcp_staging_secret_token_123456"
+      scrubbed_err = compressed_client.send(:scrub_secret, straddle_msg, prod_client_router_cfg.environments[:staging])
+      expect(scrubbed_err).not_to include("snt_mcp_staging")
+    end
+
+    it "isolates valid MCP tokens from shared-IP auth lockouts, masks IPv6 /64, prevents lockout eviction, and keeps with_configuration rate limits intact (P1-4, P1-5)" do
+      Sentrace.configure do |c|
+        c.mcp_auth_failure_limit_per_minute = 2
+      end
+
+      valid_record, valid_raw = Sentrace::McpToken.issue!(name: "nat-shared-valid")
+      shared_ip = "203.0.113.77"
+
+      # Attacker on the same NAT IP triggers mcp_auth_fail lockout
+      3.times do |i|
+        post "https://mcp.example.com/sentrace/mcp",
+          params: JSON.generate(jsonrpc: "2.0", id: 1, method: "ping", params: {}),
+          headers: {
+            "Authorization" => "Bearer invalid-attempt-#{i}",
+            "Content-Type" => "application/json",
+            "Accept" => "application/json, text/event-stream",
+            "REMOTE_ADDR" => shared_ip
+          }
+      end
+      expect(response).to have_http_status(:too_many_requests)
+
+      # Legitimate user with a verified token on the EXACT SAME IP still succeeds!
+      post "https://mcp.example.com/sentrace/mcp",
+        params: JSON.generate(jsonrpc: "2.0", id: 1, method: "ping", params: {}),
+        headers: {
+          "Authorization" => "Bearer #{valid_raw}",
+          "Content-Type" => "application/json",
+          "Accept" => "application/json, text/event-stream",
+          "REMOTE_ADDR" => shared_ip
+        }
+      expect(response).to have_http_status(:ok)
+      expect(valid_record.reload.last_used_at).to be_present
+
+      # Sentrace.with_configuration without reset_rate_limiter: true MUST NOT clear the attacker's IP lockout
+      Sentrace.with_configuration(sample_rate: 0.5) { nil }
+      post "https://mcp.example.com/sentrace/mcp",
+        params: JSON.generate(jsonrpc: "2.0", id: 1, method: "ping", params: {}),
+        headers: {
+          "Authorization" => "Bearer invalid-after-with-config",
+          "Content-Type" => "application/json",
+          "Accept" => "application/json, text/event-stream",
+          "REMOTE_ADDR" => shared_ip
+        }
+      expect(response).to have_http_status(:too_many_requests)
+
+      # Spraying 1,100 distinct fake IPs with 1 hit each MUST NOT evict the locked-out shared_ip entry
+      1_100.times do |idx|
+        Sentrace::RateLimiter.check!(
+          bucket: "mcp_auth_fail",
+          identifier: "198.51.100.#{idx}",
+          limit: 2,
+          increment: true
+        )
+      end
+      locked_check = Sentrace::RateLimiter.check!(
+        bucket: "mcp_auth_fail",
+        identifier: shared_ip,
+        limit: 2,
+        increment: false
+      )
+      expect(locked_check[:count]).to be >= 2
+
+      # IPv6 addresses in the same /64 map to the same rate_limit_ip identifier
+      req_v6_a = ActionDispatch::Request.new("REMOTE_ADDR" => "2001:db8:abcd:0012::1")
+      req_v6_b = ActionDispatch::Request.new("REMOTE_ADDR" => "2001:db8:abcd:0012:ffff:1234:5678:9abc")
+      expect(Sentrace::RequestSecurity.rate_limit_ip(req_v6_a)).to eq("2001:db8:abcd:12::/64")
+      expect(Sentrace::RequestSecurity.rate_limit_ip(req_v6_b)).to eq("2001:db8:abcd:12::/64")
+    end
+
+    it "charges multi-event envelope rate-limit cost, masks SQL backslash-quote parity tricks, and scrubs bracket/fragment/IPv6 URL secrets (P1-7, P1-8, P1-9)" do
+      # P1-7: Multi-event envelope charges per-event cost and rejects before persisting when exceeding quota
+      Sentrace.configure do |c|
+        c.ingestion_rate_limit_per_minute = 3
+      end
+      events_batch = Array.new(4) do |i|
+        "{\"type\":\"event\"}\n" + JSON.generate("event_id" => format("aabbccdd0000000000000000000000%02d", i), "message" => "batch #{i}")
+      end.join("\n")
+      envelope_4 = "{}\n#{events_batch}\n"
+
+      expect {
+        post "/sentrace/api/#{project.id}/envelope",
+          params: envelope_4,
+          headers: {
+            "Content-Type" => "application/x-sentry-envelope",
+            "X-Sentry-Auth" => "Sentry sentry_key=#{dsn_key.public_key}",
+            "REMOTE_ADDR" => "192.0.2.55"
+          }
+      }.not_to change { project.events.count }
+      expect(response).to have_http_status(:too_many_requests)
+
+      # P1-8: SQL sanitizer resists backslash-quote parity inversion, E'...' escapes, dollar-quotes inside single-quotes, and comments
+      tricky_pg_sql = "SELECT * FROM users WHERE name = 'hello\\' AND api_key = 'LEAKED_PG_KEY' AND x = '1'"
+      masked_pg = Sentrace::Breadcrumbs::ActiveSupportLogger.send(:sanitize_sql_statement, tricky_pg_sql, adapter_name: "PostgreSQL")
+      expect(masked_pg).not_to include("LEAKED_PG_KEY")
+
+      tricky_escape_sql = "SELECT * FROM users WHERE name = E'hello\\' AND x = 1' AND api_key = 'LEAKED_ESCAPE_KEY'"
+      masked_escape = Sentrace::Breadcrumbs::ActiveSupportLogger.send(:sanitize_sql_statement, tricky_escape_sql, adapter_name: "PostgreSQL")
+      expect(masked_escape).not_to include("LEAKED_ESCAPE_KEY")
+
+      tricky_dollar_sql = "SELECT * FROM users WHERE note = 'prefix$$ ' AND api_key = 'LEAKED_DOLLAR_KEY' -- $$"
+      masked_dollar = Sentrace::Breadcrumbs::ActiveSupportLogger.send(:sanitize_sql_statement, tricky_dollar_sql, adapter_name: "PostgreSQL")
+      expect(masked_dollar).not_to include("LEAKED_DOLLAR_KEY")
+
+      # P1-9: Sanitizer scrubs bracketed query params, OAuth URL fragments, IPv6 inline URLs, and new URL_VALUE_KEYS
+      sanitizer = Sentrace::Ingestion::Sanitizer.new
+      scrubbed_inline = sanitizer.send(
+        :scrub_text,
+        "Failed [cb](https://auth.example.com/cb?user[password]=BRACKET_SEC&user[ssn]=123-45-6789&ok=1) " \
+        "and [frag=https://auth.example.com/oauth#access_token=FRAGMENT_SEC] and http://[::1]:3000/cb?token=IPV6_SEC."
+      )
+      expect(scrubbed_inline).not_to include("BRACKET_SEC", "123-45-6789", "FRAGMENT_SEC", "IPV6_SEC")
+      expect(scrubbed_inline).to include("ok=1")
+
+      scrubbed_ctx = sanitizer.send(
+        :scrub_hash,
+        {
+          "referer" => "https://app.example.com/login?token=REF_SEC#id_token=FRAG2",
+          "redirect_uri" => "/oauth/callback?secret=REDIR_SEC"
+        }
+      )
+      expect(JSON.generate(scrubbed_ctx)).not_to include("REF_SEC", "FRAG2", "REDIR_SEC")
+    end
+
+    it "supports ingestion_source filtering, strips Braille/separator Unicode, scopes MCP tokens per project, avoids inline pool deadlocks, and honors allow_request_base_url_fallback in ProjectsController (P2-1..P2-5)" do
+      other_project, _ = Sentrace::Project.provision!(slug: "other-tenant", name: "Other Tenant", secret: "super-secret-dsn-key")
+      expect(other_project.active_key.secret_digest).to be_present
+
+      Sentrace::Ingestion::Processor.ingest_event(
+        { "event_id" => "ababababababababababababababab01", "message" => "Server\u2800\u180B\uFFF9error" },
+        project: project,
+        ingestion_source: "in_process"
+      )
+      Sentrace::Ingestion::Processor.ingest_event(
+        { "event_id" => "ababababababababababababababab02", "message" => "Client error" },
+        project: project,
+        ingestion_source: "http_dsn"
+      )
+      other_res = Sentrace::Ingestion::Processor.ingest_event(
+        { "event_id" => "ababababababababababababababab03", "message" => "Other tenant error" },
+        project: other_project,
+        ingestion_source: "in_process"
+      )
+
+      # P2-2: Braille blank (\u2800), Mongolian FVS (\u180B), and interlinear annotation (\uFFF9) stripped
+      ev1 = project.events.find_by!(event_id: "ababababababababababababababab01")
+      expect(ev1.event_data["message"]).to eq("Servererror")
+      expect(Sentrace::RequestSecurity.sanitize_single_line("hdr\u2028\u2029\u2800line")).to eq("hdr  line")
+
+      # P2-1 & P2-3: Project-scoped MCP token filters by ingestion_source and blocks cross-project access
+      scoped_token, scoped_raw = Sentrace::McpToken.issue!(name: "proj-scoped", project_id: project.slug)
+      expect(scoped_token.project_id).to eq(project.id)
+
+      scoped_backend = Sentrace::Mcp::LocalBackend.new(allowed_project_id: scoped_token.project_id)
+      expect(scoped_backend.list_projects["projects"].map { |p| p["id"] }).to eq([ project.id ])
+      in_proc_events = scoped_backend.list_events(ingestion_source: "in_process")["events"]
+      expect(in_proc_events.map { |e| e["ingestion_source"] }.uniq).to eq([ "in_process" ])
+      http_events = scoped_backend.list_events(ingestion_source: "http_dsn")["events"]
+      expect(http_events.map { |e| e["ingestion_source"] }.uniq).to eq([ "http_dsn" ])
+
+      expect {
+        scoped_backend.list_issues(project_id: other_project.id)
+      }.to raise_error(Sentrace::McpForbiddenError)
+      expect {
+        scoped_backend.get_issue(issue_id: other_res.issue_id)
+      }.to raise_error(Sentrace::McpNotFoundError)
+
+      get "https://app.example.com/sentrace/internal/projects/#{other_project.id}",
+        headers: { "Authorization" => "Bearer #{scoped_raw}" }
+      expect(response).to have_http_status(:forbidden)
+      # Non-existent project IDs ALSO return 403 (not 404) so project-scoped tokens have no cross-tenant existence oracle
+      get "https://app.example.com/sentrace/internal/projects/999999",
+        headers: { "Authorization" => "Bearer #{scoped_raw}" }
+      expect(response).to have_http_status(:forbidden)
+
+      # Rotating a project-scoped token preserves its project_id scope automatically
+      rotated_scoped, _ = Sentrace::McpToken.rotate!(name: "proj-scoped")
+      expect(rotated_scoped.project_id).to eq(project.id)
+
+      # P2-4: Saturated connection pool inside an open transaction falls back to AsyncWorker instead of deadlocking
+      fake_worker = instance_double(Sentrace::AsyncWorker)
+      expect(fake_worker).to receive(:enqueue).and_return(true)
+      allow(ActiveRecord::Base.connection_pool).to receive(:stat).and_return({ size: 1, busy: 1 })
+      allow(Sentrace::CaptureDispatcher).to receive(:isolate_caller_connection?).and_return(true)
+
+      Sentrace.with_configuration(enabled: true, project_id: project.id, capture_dispatch: :inline) do
+        captured_id = Sentrace::CaptureDispatcher.capture_message("No deadlock under saturated pool", worker: fake_worker)
+        expect(captured_id).to be_present
+      end
+
+      # P2-5: Internal::ProjectsController honors allow_request_base_url_fallback = false
+      admin_token, admin_raw = Sentrace::McpToken.issue!(name: "admin-proj-check", scopes: "read,write,admin")
+      expect(admin_token.admin?).to be(true)
+      Sentrace.configure do |c|
+        c.public_base_url = nil
+        c.allow_request_base_url_fallback = false
+      end
+      get "https://evil-host.example.com/sentrace/internal/projects/#{project.id}",
+        headers: { "Authorization" => "Bearer #{admin_raw}" }
+      expect(response).to have_http_status(:ok)
+      expect(response.parsed_body.dig("project", "dsn")).to be_nil
+    end
+  end
 end

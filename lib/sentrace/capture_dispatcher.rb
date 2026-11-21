@@ -11,6 +11,7 @@ module Sentrace
         return nil if Thread.current[REENTRANCY_KEY]
         return nil unless dispatchable?(config, explicit_project_id: options[:project_id])
         return nil unless sampled?(config)
+        return nil if in_process_rate_limited?(config, explicit_project_id: options[:project_id])
 
         raw_event = EventBuilder.build_exception_event(
           exception,
@@ -27,7 +28,8 @@ module Sentrace
           config: config,
           worker: worker,
           apply_sampling: false,
-          apply_before_send: true
+          apply_before_send: true,
+          rate_limit_checked: true
         )
       end
 
@@ -36,6 +38,7 @@ module Sentrace
         return nil if Thread.current[REENTRANCY_KEY]
         return nil unless dispatchable?(config, explicit_project_id: options[:project_id])
         return nil unless sampled?(config)
+        return nil if in_process_rate_limited?(config, explicit_project_id: options[:project_id])
 
         raw_event = EventBuilder.build_message_event(
           message,
@@ -53,7 +56,8 @@ module Sentrace
           config: config,
           worker: worker,
           apply_sampling: false,
-          apply_before_send: true
+          apply_before_send: true,
+          rate_limit_checked: true
         )
       end
 
@@ -66,12 +70,14 @@ module Sentrace
         config: Sentrace.configuration,
         worker: AsyncWorker.default,
         apply_sampling: false,
-        apply_before_send: false
+        apply_before_send: false,
+        rate_limit_checked: false
       )
         return nil unless raw_event.is_a?(Hash)
         return nil if Thread.current[REENTRANCY_KEY]
         return nil unless dispatchable?(config, explicit_project_id: explicit_project_id)
         return nil if apply_sampling && !sampled?(config)
+        return nil if !rate_limit_checked && in_process_rate_limited?(config, explicit_project_id: explicit_project_id)
 
         prepared = EventBuilder.deep_stringify(raw_event)
         prepared["event_id"] = normalize_or_generate_event_id(prepared["event_id"], envelope_headers)
@@ -93,7 +99,8 @@ module Sentrace
             envelope_headers: headers_snapshot,
             received_at: received_at,
             explicit_project_id: explicit_project_id,
-            config: config
+            config: config,
+            worker: worker
           ) ? event_id : nil
         else
           enqueued = worker.enqueue(queue_size: config.async_queue_size) do
@@ -158,6 +165,19 @@ module Sentrace
           !explicit_project_id.nil? || config.target_project_configured?
         end
 
+        def in_process_rate_limited?(config, explicit_project_id:)
+          limit = config.respond_to?(:in_process_rate_limit_per_minute) ? config.in_process_rate_limit_per_minute : nil
+          return false unless limit
+
+          identifier = (explicit_project_id || config.project_id || config.project_slug || "default").to_s
+          result = RateLimiter.check!(
+            bucket: "in_process_capture",
+            identifier: identifier,
+            limit: limit
+          )
+          !result[:allowed]
+        end
+
         def sampled?(config)
           rate = config.sample_rate.to_f
           return false if rate <= 0.0
@@ -178,8 +198,20 @@ module Sentrace
           raw.match?(Ingestion::EventNormalizer::EVENT_ID_HEX) ? raw : SecureRandom.hex(16)
         end
 
-        def persist_inline(raw_event, envelope_headers:, received_at:, explicit_project_id:, config:)
+        def persist_inline(raw_event, envelope_headers:, received_at:, explicit_project_id:, config:, worker: AsyncWorker.default)
           if isolate_caller_connection?
+            if connection_pool_saturated?
+              return worker.enqueue(queue_size: config.async_queue_size) do
+                persist_on_current_connection(
+                  raw_event,
+                  envelope_headers: envelope_headers,
+                  received_at: received_at,
+                  explicit_project_id: explicit_project_id,
+                  config: config
+                )
+              end
+            end
+
             Thread.new do
               Thread.current.report_on_exception = false if Thread.current.respond_to?(:report_on_exception=)
               Thread.current[REENTRANCY_KEY] = true
@@ -249,6 +281,18 @@ module Sentrace
           defined?(PG::PQTRANS_INERROR) &&
             raw.respond_to?(:transaction_status) &&
             raw.transaction_status == PG::PQTRANS_INERROR
+        rescue StandardError
+          false
+        end
+
+        def connection_pool_saturated?
+          pool = ActiveRecord::Base.connection_pool
+          return false unless pool.respond_to?(:stat)
+
+          stats = pool.stat
+          size = stats[:size].to_i
+          busy = stats[:busy].to_i
+          size.positive? && busy >= size
         rescue StandardError
           false
         end

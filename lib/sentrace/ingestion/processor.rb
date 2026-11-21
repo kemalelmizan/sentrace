@@ -10,14 +10,16 @@ module Sentrace
           received_at: Time.current,
           config: Sentrace.configuration,
           ingestion_source: "http_dsn",
-          trusted_http_key: false
+          trusted_http_key: false,
+          before_persist: nil
         )
           new(config: config).process_raw_envelope(
             raw_body,
             project: project,
             received_at: received_at,
             ingestion_source: ingestion_source,
-            trusted_http_key: trusted_http_key
+            trusted_http_key: trusted_http_key,
+            before_persist: before_persist
           )
         end
 
@@ -45,12 +47,13 @@ module Sentrace
         @config = config
       end
 
-      def process_raw_envelope(raw_body, project:, received_at: Time.current, ingestion_source: "http_dsn", trusted_http_key: false)
+      def process_raw_envelope(raw_body, project:, received_at: Time.current, ingestion_source: "http_dsn", trusted_http_key: false, before_persist: nil)
         parsed = EnvelopeParser.parse(
           raw_body,
           max_items: @config.max_envelope_items,
           max_events: @config.max_events_per_envelope
         )
+        before_persist.call(parsed.events.size) if before_persist && parsed.events.size > 1
         accepted_ids = []
         duplicate_ids = []
 
@@ -100,7 +103,12 @@ module Sentrace
           )
         end
 
-        sanitized = Sanitizer.sanitize(normalized, project_id: project_id, config: @config)
+        sanitized = Sanitizer.sanitize(
+          normalized,
+          project_id: project_id,
+          config: @config,
+          trusted_http_key: trusted_http_key
+        )
         # Domain-separate public-key-only http_dsn fingerprints so untrusted browser callers
         # can never collide with, overwrite, or reopen trusted in_process backend issues.
         trust_domain = (sanitized.event_data["ingestion_source"] == "http_dsn" && !trusted_http_key) ? "http_dsn" : nil

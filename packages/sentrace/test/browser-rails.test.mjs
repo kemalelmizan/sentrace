@@ -723,12 +723,37 @@ test("window.onerror scrubs fallbackFrame filename and stack frames honor custom
     const stackFrame = mem.envelopes[1].event.exception.values[0].stacktrace.frames[0];
     assert.equal(stackFrame.filename, "https://shop.example.com/app.js?custom_secret=[REDACTED]&ok=2");
 
-    // Verify backslash protocol-relative URLs are rejected by isSameOrAllowedOrigin
-    const { isSameOrAllowedOrigin } = await import("../src/dsn.ts");
+    // Verify backslash protocol-relative URLs and scheme-without-slashes cross-origin URLs are rejected by isSameOrAllowedOrigin
+    const { isSameOrAllowedOrigin, scrubUrl } = await import("../src/dsn.ts");
     assert.equal(
       isSameOrAllowedOrigin("\\\\evil.example.com/x", "https://shop.example.com/sentrace/api/1/envelope", "https://shop.example.com/"),
       false
     );
+    assert.equal(
+      isSameOrAllowedOrigin("https:evil.example.com/api", "http://shop.example.com/sentrace/api/1/envelope", "http://shop.example.com/checkout"),
+      false
+    );
+    assert.equal(
+      isSameOrAllowedOrigin("javascript:alert(1)", "https://shop.example.com/sentrace/api/1/envelope", "https://shop.example.com/"),
+      false
+    );
+    assert.equal(
+      isSameOrAllowedOrigin("data:text/plain,hello", null, "about:blank"),
+      false
+    );
+    assert.equal(
+      scrubUrl("https://shop.example.com/cb?user[ssn]=123-45-6789&auth[jwt]=eyJabc&ok=1"),
+      "https://shop.example.com/cb?user%5Bssn%5D=[REDACTED]&auth%5Bjwt%5D=[REDACTED]&ok=1"
+    );
+
+    // Unsettled async withScope promises stay bounded and never leak unbounded scopeStack entries
+    for (let i = 0; i < 100; i += 1) {
+      Sentrace.withScope((scope) => {
+        scope.setTag("leaked_idx", i);
+        return new Promise(() => {});
+      });
+    }
+    Sentrace.resetClient();
 
     await Sentrace.close();
   } finally {

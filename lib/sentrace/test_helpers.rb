@@ -1,7 +1,7 @@
 module Sentrace
   module TestHelpers
     def with_sentrace_test_config(**overrides, &block)
-      defaults = { enabled: true, capture_dispatch: :inline }
+      defaults = { enabled: true, capture_dispatch: :inline, reset_rate_limiter: true }
       Sentrace.with_configuration(**defaults.merge(overrides), &block)
     ensure
       Sentrace.clear_scope!
@@ -12,6 +12,8 @@ module Sentrace
       Sentrace.clear_scope!
       CaptureDispatcher.clear_cache!
       FrontendDsnResolver.clear_cache!
+      RateLimiter.reset!
+      McpToken.clear_verified_cache! if defined?(McpToken) && McpToken.respond_to?(:clear_verified_cache!)
       Integrations::ExceptionDeduplicator.reset!
     end
   end

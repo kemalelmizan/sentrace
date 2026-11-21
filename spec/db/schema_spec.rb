@@ -34,16 +34,19 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     issue_indexes = connection.indexes(:sentrace_issues).index_by(&:name)
     expect(issue_indexes.keys).to contain_exactly(
       "index_sentrace_issues_on_project_fingerprint",
-      "index_sentrace_issues_on_project_status_last_seen"
+      "index_sentrace_issues_on_project_status_last_seen",
+      "index_sentrace_issues_on_last_seen_at_id"
     )
     expect(issue_indexes["index_sentrace_issues_on_project_fingerprint"].unique).to be(true)
     expect(issue_indexes["index_sentrace_issues_on_project_status_last_seen"].orders).to eq("last_seen_at" => :desc)
+    expect(issue_indexes["index_sentrace_issues_on_last_seen_at_id"].orders).to eq(:desc)
 
     event_indexes = connection.indexes(:sentrace_events).index_by(&:name)
     expect(event_indexes.keys).to contain_exactly(
       "index_sentrace_events_on_project_event_id",
       "index_sentrace_events_on_issue_occurred_at",
       "index_sentrace_events_on_project_occurred_at",
+      "index_sentrace_events_on_occurred_at",
       "index_sentrace_events_on_received_at",
       "index_sentrace_events_on_issue_release",
       "index_sentrace_events_on_issue_platform",
@@ -61,6 +64,8 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
     expect(mcp_token_cols["last_used_at"].sql_type).to eq("timestamp with time zone")
     expect(mcp_token_cols["expires_at"].sql_type).to eq("timestamp with time zone")
     expect(mcp_token_cols["scopes"].sql_type).to eq("character varying(255)")
+    expect(mcp_token_cols["scopes"].default).to eq("read")
+    expect(mcp_token_cols["project_id"].sql_type).to eq("bigint")
 
     mcp_token_indexes = connection.indexes(:sentrace_mcp_tokens).index_by(&:name)
     expect(mcp_token_indexes.keys).to contain_exactly("index_sentrace_mcp_tokens_on_token_digest")
@@ -69,7 +74,7 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
 
   it "uses ActiveRecord::Migration[6.1] and t.column(..., :timestamptz) without PG 15+ SQL constructs" do
     migrations = Dir.glob(File.expand_path("../../db/migrate/*.rb", __dir__)).sort
-    expect(migrations.size).to eq(7)
+    expect(migrations.size).to eq(8)
 
     migrations.each do |migration_file|
       source = File.read(migration_file)
@@ -98,7 +103,8 @@ RSpec.describe "Sentrace PostgreSQL schema and index strategy" do
       CreateSentraceEvents,
       CreateSentraceMcpTokens,
       AddExpiresAtAndScopesToSentraceMcpTokens,
-      AddSecurityAndQueryIndexesToSentraceEvents
+      AddSecurityAndQueryIndexesToSentraceEvents,
+      AddRound3SecurityHardeningSchema
     ]
 
     ActiveRecord::Migration.suppress_messages do

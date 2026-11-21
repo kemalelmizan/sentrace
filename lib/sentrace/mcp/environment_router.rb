@@ -3,10 +3,12 @@ module Sentrace
     class EnvironmentRouter
       MUTATION_OPERATIONS = %i[update_issue_status].freeze
       MAX_FEDERATED_CONCURRENCY = 8
+      PRODUCTION_ENV_REGEX = /\A(?:prod(?:uction)?|live)(?:[-_].*)?\z/i
 
-      def initialize(config: Sentrace.configuration, remote_client: RemoteHttpClient.new)
+      def initialize(config: Sentrace.configuration, remote_client: RemoteHttpClient.new, allowed_project_id: nil)
         @config = config
         @remote_client = remote_client
+        @allowed_project_id = allowed_project_id&.to_i
       end
 
       def list_environments
@@ -40,6 +42,10 @@ module Sentrace
         if targets.one? && !multi_environment_request?(environment)
           execute_single(targets.first, op_sym, **kwargs)
         else
+          if !kwargs[:cursor].nil? && !kwargs[:cursor].to_s.strip.empty?
+            raise McpInvalidParamsError,
+              "Pagination cursor cannot be used with environment='all'; query a specific environment to paginate"
+          end
           execute_federated(targets, op_sym, **kwargs)
         end
       end
@@ -80,10 +86,10 @@ module Sentrace
           when :local
             if in_worker_thread
               ActiveRecord::Base.connection_pool.with_connection do
-                LocalBackend.new(environment_name: env_def.name).public_send(op_sym, **kwargs)
+                LocalBackend.new(environment_name: env_def.name, allowed_project_id: @allowed_project_id).public_send(op_sym, **kwargs)
               end
             else
-              LocalBackend.new(environment_name: env_def.name).public_send(op_sym, **kwargs)
+              LocalBackend.new(environment_name: env_def.name, allowed_project_id: @allowed_project_id).public_send(op_sym, **kwargs)
             end
           when :http
             unless @remote_client
@@ -118,6 +124,15 @@ module Sentrace
               error: {
                 "environment" => target.name.to_s,
                 "category" => "not_found",
+                "message" => e.message
+              }
+            }
+          rescue McpForbiddenError => e
+            {
+              ok: false,
+              error: {
+                "environment" => target.name.to_s,
+                "category" => "forbidden",
                 "message" => e.message
               }
             }
@@ -182,13 +197,14 @@ module Sentrace
             "environments_queried" => targets.map { |t| t.name.to_s },
             "errors" => errors
           }
+          base["untrusted_telemetry_notice"] = LocalBackend::UNTRUSTED_TELEMETRY_NOTICE if errors.any?
 
           case op_sym
           when :list_projects
             base.merge("projects" => successes.flat_map { |p| Array(p["projects"]) })
           when :list_issues
             merged_issues = successes.flat_map { |p| Array(p["issues"]) }
-            sorted_issues = merged_issues.sort_by { |i| [ i["last_seen_at"].to_s, i["id"].to_i ] }.reverse
+            sorted_issues = merged_issues.sort_by { |i| [ -parse_sort_epoch(i["last_seen_at"]), -i["id"].to_i ] }
             sorted_issues = apply_optional_limit(sorted_issues, kwargs[:limit])
             base.merge(
               "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
@@ -197,7 +213,7 @@ module Sentrace
             )
           when :list_events
             merged_events = successes.flat_map { |p| Array(p["events"]) }
-            sorted_events = merged_events.sort_by { |ev| [ ev["occurred_at"].to_s, ev["id"].to_i ] }.reverse
+            sorted_events = merged_events.sort_by { |ev| [ -parse_sort_epoch(ev["occurred_at"]), -ev["id"].to_i ] }
             sorted_events = apply_optional_limit(sorted_events, kwargs[:limit])
             base.merge(
               "untrusted_telemetry_notice" => LocalBackend::UNTRUSTED_TELEMETRY_NOTICE,
@@ -287,18 +303,34 @@ module Sentrace
         end
 
         def select_correlation_representative(group)
-          prod_items = group.select { |item| item["environment"].to_s.casecmp("production").zero? }
+          prod_items = group.select { |item| item["environment"].to_s.match?(PRODUCTION_ENV_REGEX) }
           candidates = prod_items.any? ? prod_items : group
-          candidates.max_by { |item| [ item["last_seen_at"].to_s, item["id"].to_i ] } || group.first
+          candidates.max_by { |item| [ parse_sort_epoch(item["last_seen_at"]), item["id"].to_i ] } || group.first
+        end
+
+        def parse_sort_epoch(raw_ts)
+          return 0.0 unless raw_ts.is_a?(String) && !raw_ts.empty?
+
+          parsed = Time.iso8601(raw_ts)
+          return 0.0 if parsed < LocalBackend::MIN_QUERY_TIME || parsed > LocalBackend::MAX_QUERY_TIME
+
+          parsed.to_f
+        rescue ArgumentError
+          0.0
         end
 
         def apply_optional_limit(items, raw_limit)
-          return items if raw_limit.nil?
+          if raw_limit.nil? || raw_limit.to_s.strip.empty?
+            return items.first(LocalBackend::MAX_LIMIT)
+          end
 
           parsed = Integer(raw_limit.to_s, 10)
-          parsed.positive? ? items.first([ parsed, LocalBackend::MAX_LIMIT ].min) : items
+          if parsed < 1 || parsed > LocalBackend::MAX_LIMIT
+            raise McpInvalidParamsError, "limit must be between 1 and #{LocalBackend::MAX_LIMIT}"
+          end
+          items.first(parsed)
         rescue ArgumentError, TypeError
-          items
+          raise McpInvalidParamsError, "limit must be an integer between 1 and #{LocalBackend::MAX_LIMIT}"
         end
 
         def build_environment_entry(env_def, in_worker_thread:)

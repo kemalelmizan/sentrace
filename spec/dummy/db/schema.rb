@@ -10,14 +10,14 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_20_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "sentrace_events", force: :cascade do |t|
     t.bigint "project_id", null: false
     t.bigint "issue_id", null: false
-    t.string "event_id", limit: 32, null: false
+    t.column "event_id", "char(32)", null: false
     t.timestamptz "occurred_at", null: false
     t.timestamptz "received_at", null: false
     t.string "environment", limit: 64
@@ -32,6 +32,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
     t.index ["issue_id", "occurred_at"], name: "index_sentrace_events_on_issue_occurred_at", order: { occurred_at: :desc }
     t.index ["issue_id", "platform"], name: "index_sentrace_events_on_issue_platform", where: "(platform IS NOT NULL)"
     t.index ["issue_id", "release"], name: "index_sentrace_events_on_issue_release", where: "(release IS NOT NULL)"
+    t.index ["occurred_at"], name: "index_sentrace_events_on_occurred_at"
     t.index ["project_id", "event_id"], name: "index_sentrace_events_on_project_event_id", unique: true
     t.index ["project_id", "occurred_at"], name: "index_sentrace_events_on_project_occurred_at", order: { occurred_at: :desc }
     t.index ["received_at"], name: "index_sentrace_events_on_received_at"
@@ -49,6 +50,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
     t.bigint "event_count", default: 0, null: false
     t.timestamptz "created_at", null: false
     t.timestamptz "updated_at", null: false
+    t.index ["last_seen_at", "id"], name: "index_sentrace_issues_on_last_seen_at_id", order: :desc
     t.index ["project_id", "fingerprint"], name: "index_sentrace_issues_on_project_fingerprint", unique: true
     t.index ["project_id", "status", "last_seen_at"], name: "index_sentrace_issues_on_project_status_last_seen", order: { last_seen_at: :desc }
   end
@@ -62,7 +64,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
     t.timestamptz "revoked_at"
     t.timestamptz "created_at", null: false
     t.timestamptz "expires_at"
-    t.string "scopes", limit: 255, default: "read,write", null: false
+    t.string "scopes", limit: 255, default: "read", null: false
+    t.bigint "project_id"
     t.index ["token_digest"], name: "index_sentrace_mcp_tokens_on_token_digest", unique: true
   end
 
@@ -88,5 +91,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_20_000002) do
   add_foreign_key "sentrace_events", "sentrace_issues", column: "issue_id", on_delete: :cascade
   add_foreign_key "sentrace_events", "sentrace_projects", column: "project_id", on_delete: :cascade
   add_foreign_key "sentrace_issues", "sentrace_projects", column: "project_id", on_delete: :cascade
+  add_foreign_key "sentrace_mcp_tokens", "sentrace_projects", column: "project_id", on_delete: :cascade
   add_foreign_key "sentrace_project_keys", "sentrace_projects", column: "project_id", on_delete: :cascade
 end

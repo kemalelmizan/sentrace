@@ -3,9 +3,8 @@ module Sentrace
     module ActiveSupportLogger
       IGNORED_SQL_NAMES = %w[SCHEMA TRANSACTION EXPLAIN].freeze
       MAX_RAW_SQL_BYTES = 8192
-      SQL_SINGLE_QUOTED_LITERAL = /'(?:''|\\'|[^'])*'/
-      SQL_UNCLOSED_SINGLE_QUOTED_LITERAL = /'(?:''|\\'|[^'])*\z/
       SQL_OPERATION_REGEX = /\A\s*([A-Za-z]+)/
+      DOLLAR_TAG_REGEX = /\G\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/
 
       @mutex = Mutex.new
       @subscribers = []
@@ -86,7 +85,8 @@ module Sentrace
             return if raw_sql.empty? || raw_sql.include?("sentrace_")
 
             operation = raw_sql[SQL_OPERATION_REGEX, 1]&.upcase
-            sanitized_sql = sanitize_sql_statement(raw_sql)
+            adapter_name = payload[:connection].respond_to?(:adapter_name) ? payload[:connection].adapter_name.to_s : ""
+            sanitized_sql = sanitize_sql_statement(raw_sql, adapter_name: adapter_name)
             label = name.empty? ? (operation || "SQL") : name
 
             data = {
@@ -112,51 +112,86 @@ module Sentrace
             Sentrace.configuration.enabled && !Thread.current[CaptureDispatcher::REENTRANCY_KEY]
           end
 
-          def sanitize_sql_statement(sql)
+          def sanitize_sql_statement(sql, adapter_name: "")
             bounded_sql = Ingestion::EventNormalizer.truncate_utf8_bytes(sql, MAX_RAW_SQL_BYTES).to_s
-            masked = mask_dollar_quoted_literals(bounded_sql)
-              .gsub(SQL_SINGLE_QUOTED_LITERAL, "'?'")
-              .gsub(SQL_UNCLOSED_SINGLE_QUOTED_LITERAL, "'?'")
+            backslash_escapes = adapter_name.to_s.match?(/mysql|trilogy/i)
+            masked = mask_sql_literals_and_comments(bounded_sql, backslash_escapes: backslash_escapes)
             collapsed = masked.gsub(/\s+/, " ").strip
-            Ingestion::EventNormalizer.truncate_utf8_bytes(collapsed, 256)
+            redacted = Ingestion::Sanitizer.redact_inline_secrets(collapsed)
+            Ingestion::EventNormalizer.truncate_utf8_bytes(redacted, 256)
           end
 
-          def mask_dollar_quoted_literals(sql)
-            return sql unless sql.include?("$")
-
+          def mask_sql_literals_and_comments(sql, backslash_escapes: false)
             out = +""
             pos = 0
             len = sql.length
 
             while pos < len
-              dollar_idx = sql.index("$", pos)
-              unless dollar_idx
-                out << sql[pos...len]
-                break
-              end
+              ch = sql[pos]
 
-              tag_match = /\G\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.match(sql, dollar_idx)
-              unless tag_match
-                out << sql[pos..dollar_idx]
-                pos = dollar_idx + 1
-                next
-              end
-
-              out << sql[pos...dollar_idx]
-              tag = tag_match[0]
-              close_idx = sql.index(tag, tag_match.end(0))
-              if close_idx
+              if ch == "-" && sql[pos + 1] == "-"
+                nl = sql.index("\n", pos + 2)
+                out << " "
+                pos = nl ? (nl + 1) : len
+              elsif ch == "/" && sql[pos + 1] == "*"
+                close_comment = sql.index("*/", pos + 2)
+                out << " "
+                pos = close_comment ? (close_comment + 2) : len
+              elsif ch == '"'
+                out << '"'
+                pos += 1
+                while pos < len
+                  if sql[pos] == '"'
+                    if sql[pos + 1] == '"'
+                      out << '""'
+                      pos += 2
+                    else
+                      out << '"'
+                      pos += 1
+                      break
+                    end
+                  else
+                    out << sql[pos]
+                    pos += 1
+                  end
+                end
+              elsif (ch == "E" || ch == "e") && sql[pos + 1] == "'" &&
+                    (pos.zero? || !sql[pos - 1].match?(/[A-Za-z0-9_]/))
                 out << "'?'"
-                pos = close_idx + tag.length
+                pos = consume_single_quoted_literal(sql, pos + 2, len, allow_backslash_escape: true)
+              elsif ch == "'"
+                out << "'?'"
+                pos = consume_single_quoted_literal(sql, pos + 1, len, allow_backslash_escape: backslash_escapes)
+              elsif ch == "$" && (tag_match = DOLLAR_TAG_REGEX.match(sql, pos))
+                tag = tag_match[0]
+                close_idx = sql.index(tag, tag_match.end(0))
+                out << "'?'"
+                pos = close_idx ? (close_idx + tag.length) : len
               else
-                # Truncated dollar-quoted literal: mask everything to the end so no secret leaks
-                out << "'?'"
-                pos = len
-                break
+                out << ch
+                pos += 1
               end
             end
 
             out
+          end
+
+          def consume_single_quoted_literal(sql, pos, len, allow_backslash_escape:)
+            while pos < len
+              cur = sql[pos]
+              if allow_backslash_escape && cur == "\\"
+                pos += 2
+              elsif cur == "'"
+                if sql[pos + 1] == "'"
+                  pos += 2
+                else
+                  return pos + 1
+                end
+              else
+                pos += 1
+              end
+            end
+            len
           end
 
           def scrub_url_or_path(raw_path)

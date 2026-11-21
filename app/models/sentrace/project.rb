@@ -6,6 +6,7 @@ module Sentrace
     has_many :events, dependent: :delete_all
     has_many :issues, dependent: :delete_all
     has_many :project_keys, dependent: :delete_all
+    has_many :mcp_tokens, dependent: :delete_all
 
     before_validation :sanitize_name
     after_save :invalidate_runtime_caches
@@ -19,18 +20,19 @@ module Sentrace
       format: { with: SLUG_FORMAT, message: "must be lowercase alphanumeric words separated by hyphens" }
 
     class << self
-      def provision!(slug:, name: nil)
+      def provision!(slug:, name: nil, secret: nil)
         normalized_slug = slug.to_s.strip.downcase
         derived_name = (name && !name.to_s.strip.empty?) ? name.to_s.strip : normalized_slug.tr("-", " ").titleize
 
         transaction do
           project = create!(slug: normalized_slug, name: derived_name)
-          key = project.project_keys.create!
+          key_attrs = secret.present? ? { secret: secret.to_s } : {}
+          key = project.project_keys.create!(key_attrs)
           [ project, key ]
         end
       end
 
-      def ensure!(slug:, name: nil, public_key: nil)
+      def ensure!(slug:, name: nil, public_key: nil, secret: nil)
         normalized_slug = slug.to_s.strip.downcase
         raise ArgumentError, "Project slug is required" if normalized_slug.empty?
 
@@ -39,6 +41,7 @@ module Sentrace
           raise ArgumentError, "public_key must be 16..64 URL-safe alphanumeric characters"
         end
 
+        provided_secret = secret.present? ? secret.to_s : nil
         derived_name = (name && !name.to_s.strip.empty?) ? name.to_s.strip : normalized_slug.tr("-", " ").titleize
         project = find_or_create_project!(slug: normalized_slug, name: derived_name)
 
@@ -52,12 +55,26 @@ module Sentrace
               if !existing_key.active || existing_key.revoked_at.present?
                 raise ArgumentError, "public_key belongs to a revoked key and cannot be reused"
               end
+              if provided_secret && !existing_key.verify_secret(provided_secret)
+                existing_key.update!(secret: provided_secret)
+              end
               [ project, existing_key ]
             else
-              [ project, project.project_keys.create!(public_key: provided_pub) ]
+              key_attrs = { public_key: provided_pub }
+              key_attrs[:secret] = provided_secret if provided_secret
+              [ project, project.project_keys.create!(key_attrs) ]
             end
           else
-            [ project, project.active_key || project.project_keys.create! ]
+            existing_active = project.active_key
+            if existing_active
+              if provided_secret && !existing_active.verify_secret(provided_secret)
+                existing_active.update!(secret: provided_secret)
+              end
+              [ project, existing_active ]
+            else
+              key_attrs = provided_secret ? { secret: provided_secret } : {}
+              [ project, project.project_keys.create!(key_attrs) ]
+            end
           end
         end
       end
@@ -79,21 +96,22 @@ module Sentrace
       project_keys.active.order(created_at: :desc, id: :desc).first
     end
 
-    def rotate_key!
+    def rotate_key!(secret: nil)
       with_lock do
         now = Time.current
         project_keys.active.find_each do |existing_key|
           existing_key.revoke!(at: now)
         end
-        project_keys.create!
+        key_attrs = secret.present? ? { secret: secret.to_s } : {}
+        project_keys.create!(key_attrs)
       end
     end
 
-    def dsn(base_url:)
+    def dsn(base_url:, secret_key: nil)
       key = active_key
       raise Error, "Project #{slug.inspect} has no active DSN key" unless key
 
-      Dsn.build(base_url: base_url, public_key: key.public_key, project_id: id).to_s
+      Dsn.build(base_url: base_url, public_key: key.public_key, secret_key: secret_key, project_id: id).to_s
     end
 
     private
@@ -104,6 +122,7 @@ module Sentrace
       def invalidate_runtime_caches
         CaptureDispatcher.clear_cache! if defined?(CaptureDispatcher)
         FrontendDsnResolver.clear_cache! if defined?(FrontendDsnResolver)
+        McpToken.clear_verified_cache! if defined?(McpToken) && McpToken.respond_to?(:clear_verified_cache!)
       end
   end
 end

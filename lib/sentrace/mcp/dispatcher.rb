@@ -4,11 +4,15 @@ module Sentrace
       DEFAULT_REMOTE_CLIENT = Object.new.freeze
       private_constant :DEFAULT_REMOTE_CLIENT
 
-      def initialize(config: Sentrace.configuration, remote_client: DEFAULT_REMOTE_CLIENT, router: nil, read_only: false)
+      def initialize(config: Sentrace.configuration, remote_client: DEFAULT_REMOTE_CLIENT, router: nil, read_only: false, allowed_project_id: nil)
         @config = config
         resolved_client = remote_client.equal?(DEFAULT_REMOTE_CLIENT) ? RemoteHttpClient.new : remote_client
         @remote_client = resolved_client
-        @router = router || EnvironmentRouter.new(config: @config, remote_client: @remote_client)
+        @router = router || EnvironmentRouter.new(
+          config: @config,
+          remote_client: @remote_client,
+          allowed_project_id: allowed_project_id
+        )
         @read_only = read_only
       end
 

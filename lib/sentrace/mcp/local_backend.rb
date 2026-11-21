@@ -29,10 +29,13 @@ module Sentrace
         "day" => "DATE_TRUNC('day', occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'"
       }.freeze
 
-      attr_reader :environment_name
+      attr_reader :environment_name, :allowed_project_id
 
-      def initialize(environment_name: "local")
+      ALLOWED_INGESTION_SOURCES = %w[in_process http_dsn].freeze
+
+      def initialize(environment_name: "local", allowed_project_id: nil)
         @environment_name = environment_name.to_s
+        @allowed_project_id = allowed_project_id&.to_i
       end
 
       def connection_status
@@ -43,19 +46,22 @@ module Sentrace
       end
 
       def list_projects
-        projects = Project.order(:id).map { |project| serialize_project(project) }
+        scope = Project.order(:id)
+        scope = scope.where(id: @allowed_project_id) if @allowed_project_id
+        projects = scope.map { |project| serialize_project(project) }
         {
           "environment" => @environment_name,
           "projects" => projects
         }
       end
 
-      def list_issues(project_id: nil, status: nil, level: nil, release: nil, platform: nil, request_id: nil, since: nil, until: nil, limit: nil, cursor: nil)
+      def list_issues(project_id: nil, status: nil, level: nil, release: nil, platform: nil, request_id: nil, ingestion_source: nil, since: nil, until: nil, limit: nil, cursor: nil)
         until_param = binding.local_variable_get(:until)
         effective_limit = coerce_limit(limit)
         resolved_project_id = resolve_optional_project_id(project_id)
         normalized_status = validate_optional_status(status)
         normalized_level = validate_optional_level(level)
+        clean_source = validate_optional_ingestion_source(ingestion_source)
         since_time = parse_optional_time(since, "since")
         until_time = parse_optional_time(until_param, "until")
         validate_time_window!(since_time, until_time)
@@ -89,6 +95,13 @@ module Sentrace
           scope = scope.where(
             "EXISTS (SELECT 1 FROM sentrace_events e WHERE e.issue_id = sentrace_issues.id AND e.event_data -> 'tags' ->> 'request_id' = ?)",
             clean_req_id
+          )
+        end
+
+        if clean_source
+          scope = scope.where(
+            "EXISTS (SELECT 1 FROM sentrace_events e WHERE e.issue_id = sentrace_issues.id AND COALESCE(e.event_data ->> 'ingestion_source', 'in_process') = ?)",
+            clean_source
           )
         end
 
@@ -164,11 +177,12 @@ module Sentrace
         }
       end
 
-      def list_events(project_id: nil, issue_id: nil, platform: nil, request_id: nil, since: nil, until: nil, limit: nil, cursor: nil)
+      def list_events(project_id: nil, issue_id: nil, platform: nil, request_id: nil, ingestion_source: nil, since: nil, until: nil, limit: nil, cursor: nil)
         until_param = binding.local_variable_get(:until)
         effective_limit = coerce_limit(limit)
         resolved_project_id = resolve_optional_project_id(project_id)
         resolved_issue_id = coerce_optional_positive_int(issue_id, "issue_id")
+        clean_source = validate_optional_ingestion_source(ingestion_source)
         since_time = parse_optional_time(since, "since")
         until_time = parse_optional_time(until_param, "until")
         validate_time_window!(since_time, until_time)
@@ -184,6 +198,9 @@ module Sentrace
         if request_id && !request_id.to_s.strip.empty?
           clean_req_id = validate_bounded_filter!(request_id, "request_id", MAX_FILTER_BYTES)
           scope = scope.where("sentrace_events.event_data -> 'tags' ->> 'request_id' = ?", clean_req_id)
+        end
+        if clean_source
+          scope = scope.where("COALESCE(sentrace_events.event_data ->> 'ingestion_source', 'in_process') = ?", clean_source)
         end
         scope = scope.where("sentrace_events.occurred_at >= ?", since_time) if since_time
         scope = scope.where("sentrace_events.occurred_at <= ?", until_time) if until_time
@@ -223,7 +240,7 @@ module Sentrace
         }
       end
 
-      def get_error_trends(project_id: nil, since: nil, until: nil, interval: "hour")
+      def get_error_trends(project_id: nil, ingestion_source: nil, since: nil, until: nil, interval: "hour")
         until_param = binding.local_variable_get(:until)
         normalized_interval = (interval || "hour").to_s.strip.downcase
         bucket_expr = TREND_BUCKET_SQL[normalized_interval]
@@ -232,6 +249,7 @@ module Sentrace
         end
 
         resolved_project_id = resolve_optional_project_id(project_id)
+        clean_source = validate_optional_ingestion_source(ingestion_source)
         until_time = parse_optional_time(until_param, "until") || Time.current.utc
         since_time = parse_optional_time(since, "since") || (until_time - 24.hours)
         validate_time_window!(since_time, until_time)
@@ -245,6 +263,10 @@ module Sentrace
         if resolved_project_id
           conditions << "project_id = ?"
           binds << resolved_project_id
+        end
+        if clean_source
+          conditions << "COALESCE(event_data ->> 'ingestion_source', 'in_process') = ?"
+          binds << clean_source
         end
 
         sql = Event.sanitize_sql_array([
@@ -401,20 +423,45 @@ module Sentrace
         end
 
         def resolve_optional_project_id(raw_project_id)
-          return nil if raw_project_id.nil? || raw_project_id.to_s.strip.empty?
+          if raw_project_id.nil? || raw_project_id.to_s.strip.empty?
+            return @allowed_project_id
+          end
 
           str = raw_project_id.to_s.strip
           if str.match?(/\A\d+\z/)
             id = Integer(str, 10)
             raise McpInvalidParamsError, "project_id must be a positive 64-bit integer" if id <= 0 || id > MAX_BIGINT
 
+            if @allowed_project_id && id != @allowed_project_id
+              raise McpForbiddenError, "Token is scoped to project #{@allowed_project_id} and cannot access project #{id}"
+            end
+
             id
+          elsif @allowed_project_id
+            allowed_id = Project.where(id: @allowed_project_id, slug: str.downcase).pick(:id)
+            unless allowed_id
+              raise McpForbiddenError, "Token is scoped to project #{@allowed_project_id} and cannot access project #{str.inspect}"
+            end
+
+            allowed_id
           else
             project = Project.find_by(slug: str.downcase)
             raise McpNotFoundError, "Project #{str.inspect} not found" unless project
 
             project.id
           end
+        end
+
+        def validate_optional_ingestion_source(raw_source)
+          return nil if raw_source.nil? || raw_source.to_s.strip.empty?
+
+          normalized = raw_source.to_s.strip.downcase
+          unless ALLOWED_INGESTION_SOURCES.include?(normalized)
+            raise McpInvalidParamsError,
+              "Unsupported ingestion_source #{raw_source.inspect} (expected in_process or http_dsn)"
+          end
+
+          normalized
         end
 
         def coerce_required_positive_int(val, name)

@@ -21,8 +21,9 @@ module Sentrace
 
       REQUEST_CONTENT_TYPE = "application/json".freeze
       REQUEST_ACCEPT = "application/json, text/event-stream".freeze
-      MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024
+      MAX_REMOTE_RESPONSE_BYTES = 1 * 1024 * 1024
       MAX_JSON_NESTING = 64
+      MAX_REMOTE_SANITIZE_NODES = 2_048
       ALLOWED_TOP_LEVEL_KEYS = %w[
         environment
         remote_deployment_environment
@@ -38,7 +39,7 @@ module Sentrace
         buckets
         next_cursor
       ].freeze
-      TELEMETRY_TOP_LEVEL_KEYS = %w[issues events issue event].freeze
+      TELEMETRY_TOP_LEVEL_KEYS = %w[issues events issue event buckets].freeze
       ALLOWED_INTERVALS = %w[minute hour day].freeze
       ALLOWED_PROJECT_KEYS = %w[id slug name environment created_at].freeze
       ALLOWED_ISSUE_SUMMARY_KEYS = %w[
@@ -222,7 +223,8 @@ module Sentrace
         def build_headers(env_def)
           headers = {
             "Content-Type" => REQUEST_CONTENT_TYPE,
-            "Accept" => REQUEST_ACCEPT
+            "Accept" => REQUEST_ACCEPT,
+            "Accept-Encoding" => "identity"
           }
           token = env_def.token.to_s.strip
           headers["Authorization"] = "Bearer #{token}" unless token.empty?
@@ -252,6 +254,7 @@ module Sentrace
               category: "protocol_error"
             )
           when 200..299
+            reject_compressed_headers!(env_def, response.headers)
             parse_json_rpc_result!(env_def, response.body.to_s)
           else
             raise McpRemoteError.new(
@@ -353,6 +356,7 @@ module Sentrace
         end
 
         def normalize_environment_attribution(payload, target_env)
+          node_budget = { remaining: MAX_REMOTE_SANITIZE_NODES * 2 }
           remote_env = RequestSecurity.sanitize_single_line(payload["environment"], max_chars: 64).to_s
           normalized = payload.slice(*ALLOWED_TOP_LEVEL_KEYS).merge("environment" => target_env)
           if !remote_env.empty? && remote_env != target_env
@@ -362,39 +366,49 @@ module Sentrace
           if normalized["projects"].is_a?(Array)
             normalized["projects"] = normalized["projects"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
               next unless item.is_a?(Hash)
-              sanitize_remote_hash(item.slice(*ALLOWED_PROJECT_KEYS)).merge("environment" => target_env)
+              clean_proj = sanitize_remote_hash(item.slice(*ALLOWED_PROJECT_KEYS), node_budget: node_budget).merge("environment" => target_env)
+              clean_proj["created_at"] = sanitize_iso8601_timestamp(clean_proj["created_at"]) if clean_proj.key?("created_at")
+              clean_proj
             end
           end
 
           if normalized["issues"].is_a?(Array)
             normalized["issues"] = normalized["issues"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
               next unless item.is_a?(Hash)
-              sanitize_remote_hash(item.slice(*ALLOWED_ISSUE_SUMMARY_KEYS)).merge("environment" => target_env)
+              sanitize_remote_issue_hash(item.slice(*ALLOWED_ISSUE_SUMMARY_KEYS), target_env, node_budget: node_budget)
             end
           end
 
           if normalized["events"].is_a?(Array)
             normalized["events"] = normalized["events"].first(LocalBackend::MAX_LIMIT).filter_map do |item|
               next unless item.is_a?(Hash)
-              sanitize_remote_hash(item.slice(*ALLOWED_EVENT_SUMMARY_KEYS)).merge("environment" => target_env)
+              sanitize_remote_event_hash(item.slice(*ALLOWED_EVENT_SUMMARY_KEYS), target_env, node_budget: node_budget)
             end
           end
 
           if normalized["buckets"].is_a?(Array)
             normalized["buckets"] = normalized["buckets"].first(LocalBackend::MAX_TREND_BUCKETS).filter_map do |item|
               next unless item.is_a?(Hash)
-              sanitize_remote_hash(item.slice(*ALLOWED_BUCKET_KEYS))
+              clean_bucket = sanitize_remote_hash(item.slice(*ALLOWED_BUCKET_KEYS), node_budget: node_budget)
+              clean_bucket["bucket_start"] = sanitize_iso8601_timestamp(clean_bucket["bucket_start"]) if clean_bucket.key?("bucket_start")
+              clean_bucket["count"] = [ clean_bucket["count"].to_i, 0 ].max if clean_bucket.key?("count")
+              clean_bucket
             end
           end
 
           if normalized["issue"].is_a?(Hash)
-            normalized["issue"] = sanitize_remote_hash(normalized["issue"].slice(*ALLOWED_ISSUE_DETAIL_KEYS))
-              .merge("environment" => target_env)
+            clean_issue = sanitize_remote_issue_hash(normalized["issue"].slice(*ALLOWED_ISSUE_DETAIL_KEYS), target_env, node_budget: node_budget)
+            if clean_issue["recent_events"].is_a?(Array)
+              clean_issue["recent_events"] = clean_issue["recent_events"].first(LocalBackend::RECENT_EVENTS_PREVIEW_LIMIT).filter_map do |ev|
+                next unless ev.is_a?(Hash)
+                sanitize_remote_event_hash(ev.slice(*ALLOWED_EVENT_SUMMARY_KEYS), target_env, node_budget: node_budget)
+              end
+            end
+            normalized["issue"] = clean_issue
           end
 
           if normalized["event"].is_a?(Hash)
-            normalized["event"] = sanitize_remote_hash(normalized["event"].slice(*ALLOWED_EVENT_DETAIL_KEYS))
-              .merge("environment" => target_env)
+            normalized["event"] = sanitize_remote_event_hash(normalized["event"].slice(*ALLOWED_EVENT_DETAIL_KEYS), target_env, node_budget: node_budget)
           end
 
           if normalized.key?("next_cursor")
@@ -414,8 +428,7 @@ module Sentrace
           %w[since until].each do |ts_key|
             next unless normalized.key?(ts_key)
 
-            clean_ts = RequestSecurity.sanitize_single_line(normalized[ts_key], max_chars: 64)
-            normalized[ts_key] = (clean_ts && !clean_ts.empty?) ? clean_ts : nil
+            normalized[ts_key] = sanitize_iso8601_timestamp(normalized[ts_key])
           end
 
           if normalized.key?("total_events")
@@ -432,33 +445,91 @@ module Sentrace
           normalized
         end
 
-        def sanitize_remote_hash(value, depth: 0)
-          return "[TRUNCATED]" if depth > 6
+        def sanitize_remote_issue_hash(raw_issue, target_env, node_budget:)
+          clean = sanitize_remote_hash(raw_issue, node_budget: node_budget).merge("environment" => target_env)
+          %w[first_seen_at last_seen_at].each do |ts_key|
+            clean[ts_key] = sanitize_iso8601_timestamp(clean[ts_key]) if clean.key?(ts_key)
+          end
+          clean
+        end
+
+        def sanitize_remote_event_hash(raw_event, target_env, node_budget:)
+          clean = sanitize_remote_hash(raw_event, node_budget: node_budget).merge("environment" => target_env)
+          %w[occurred_at received_at].each do |ts_key|
+            clean[ts_key] = sanitize_iso8601_timestamp(clean[ts_key]) if clean.key?(ts_key)
+          end
+          clean
+        end
+
+        def sanitize_iso8601_timestamp(raw_val)
+          return nil if raw_val.nil?
+
+          clean = RequestSecurity.sanitize_single_line(raw_val, max_chars: 64).to_s
+          return nil if clean.empty?
+
+          parsed = Time.iso8601(clean).utc
+          return nil if parsed < LocalBackend::MIN_QUERY_TIME || parsed > LocalBackend::MAX_QUERY_TIME
+
+          parsed.nsec.zero? ? parsed.iso8601 : parsed.iso8601(6)
+        rescue ArgumentError
+          nil
+        end
+
+        def reject_compressed_headers!(env_def, headers)
+          return unless headers.is_a?(Hash)
+
+          _, encoding = headers.find { |k, _| k.to_s.casecmp("content-encoding").zero? }
+          clean_enc = encoding.to_s.strip.downcase
+          return if clean_enc.empty? || clean_enc == "identity"
+
+          raise McpRemoteError.new(
+            "Unsupported compressed Content-Encoding from environment #{env_def.name}",
+            environment: env_def.name,
+            category: "protocol_error"
+          )
+        end
+
+        def sanitize_remote_hash(value, depth: 0, node_budget: { remaining: MAX_REMOTE_SANITIZE_NODES })
+          node_budget[:remaining] -= 1
+          return "[TRUNCATED]" if node_budget[:remaining] < 0 || depth > 6
 
           case value
           when Hash
-            value.first(64).to_h do |k, v|
+            out = {}
+            value.first(64).each do |k, v|
+              break if node_budget[:remaining] <= 0
+
               clean_k = Ingestion::EventNormalizer.truncate_utf8_bytes(
                 Ingestion::EventNormalizer.strip_unsafe_characters(k.to_s, allow_newlines: false),
                 128
               )
-              [ clean_k, sanitize_remote_hash(v, depth: depth + 1) ]
+              out[clean_k] = sanitize_remote_hash(v, depth: depth + 1, node_budget: node_budget)
             end
+            out
           when Array
-            value.first(100).map { |item| sanitize_remote_hash(item, depth: depth + 1) }
+            out = []
+            value.first(100).each do |item|
+              break if node_budget[:remaining] <= 0
+
+              out << sanitize_remote_hash(item, depth: depth + 1, node_budget: node_budget)
+            end
+            out
           when String
-            cleaned = Ingestion::EventNormalizer.strip_unsafe_characters(value, allow_newlines: true)
-            Ingestion::EventNormalizer.truncate_utf8_bytes(cleaned, 8192)
+            bounded = Ingestion::EventNormalizer.truncate_utf8_bytes(value, 16_384)
+            cleaned = Ingestion::EventNormalizer.strip_unsafe_characters(bounded, allow_newlines: true)
+            redacted = Ingestion::Sanitizer.redact_inline_secrets(cleaned)
+            Ingestion::EventNormalizer.truncate_utf8_bytes(redacted, 8192)
           else
             value
           end
         end
 
         def scrub_secret(message, env_def)
-          text = RequestSecurity.sanitize_single_line(message, max_chars: 512).to_s
+          bounded = Ingestion::EventNormalizer.truncate_utf8_bytes(message.to_s, 4_096).to_s
           secret = env_def.token.to_s
-          text.gsub!(secret, "[REDACTED]") unless secret.empty?
-          text
+          bounded = bounded.gsub(secret, "[REDACTED]") unless secret.empty?
+          redacted = Ingestion::Sanitizer.redact_inline_secrets(bounded)
+          RequestSecurity.sanitize_single_line(redacted, max_chars: 512).to_s
         end
 
         def perform_net_http_post(uri:, headers:, body:, timeout:, env_name: nil)
@@ -488,6 +559,14 @@ module Sentrace
             conn.request(request) do |response|
               status_code = response.code.to_i
               response_headers = response.each_header.to_h
+              content_encoding = response_headers["content-encoding"].to_s.strip.downcase
+              if !content_encoding.empty? && content_encoding != "identity"
+                raise McpRemoteError.new(
+                  "Unsupported compressed Content-Encoding from environment #{env_name}",
+                  environment: env_name,
+                  category: "protocol_error"
+                )
+              end
               response.read_body do |chunk|
                 if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
                   raise Timeout::Error, "execution expired"

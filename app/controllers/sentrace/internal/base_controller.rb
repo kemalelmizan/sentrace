@@ -32,6 +32,10 @@ module Sentrace
         render json: { error: err.message }, status: :not_found
       end
 
+      rescue_from McpForbiddenError do |err|
+        render json: { error: err.message }, status: :forbidden
+      end
+
       rescue_from McpInvalidParamsError do |err|
         render json: { error: err.message }, status: 422
       end
@@ -61,9 +65,14 @@ module Sentrace
 
         def verify_internal_rate_limit!
           config = Sentrace.configuration
+          if config.internal_authenticator.nil?
+            raw_bearer = extract_bearer_token
+            return if raw_bearer && McpToken.recently_verified_raw_token?(raw_bearer)
+          end
+
           rate_result = RateLimiter.check!(
             bucket: "internal",
-            identifier: rate_limit_identifier,
+            identifier: "ip:#{rate_limit_identifier}",
             limit: config.mcp_rate_limit_per_minute
           )
           unless rate_result[:allowed]
@@ -110,22 +119,22 @@ module Sentrace
         def authenticate_internal_request!
           config = Sentrace.configuration
           client_ip = rate_limit_identifier
-
-          if config.mcp_auth_failure_limit_per_minute
-            auth_precheck = RateLimiter.check!(
-              bucket: "mcp_auth_fail",
-              identifier: client_ip,
-              limit: config.mcp_auth_failure_limit_per_minute,
-              increment: false
-            )
-            if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
-              render_rate_limited(auth_precheck[:retry_after])
-              return
-            end
-          end
-
           custom_auth = config.internal_authenticator
+
           if custom_auth
+            if config.mcp_auth_failure_limit_per_minute
+              auth_precheck = RateLimiter.check!(
+                bucket: "mcp_auth_fail",
+                identifier: client_ip,
+                limit: config.mcp_auth_failure_limit_per_minute,
+                increment: false
+              )
+              if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
+                render_rate_limited(auth_precheck[:retry_after])
+                return
+              end
+            end
+
             auth_result = custom_auth.arity == 2 || custom_auth.arity < 0 ? custom_auth.call(request, required_internal_scope) : custom_auth.call(request)
             if apply_custom_auth_result!(auth_result)
               return
@@ -139,10 +148,46 @@ module Sentrace
             return
           end
 
-          auth_header = request.headers["Authorization"].to_s
-          bearer = auth_header.bytesize <= 1024 ? auth_header[/\ABearer\s+(\S+)\z/i, 1] : nil
-          @current_mcp_token = McpToken.authenticate(bearer)
-          return if @current_mcp_token
+          bearer = extract_bearer_token
+          known_verified = bearer && McpToken.recently_verified_raw_token?(bearer)
+
+          if !known_verified && config.mcp_auth_failure_limit_per_minute
+            auth_precheck = RateLimiter.check!(
+              bucket: "mcp_auth_fail",
+              identifier: client_ip,
+              limit: config.mcp_auth_failure_limit_per_minute,
+              increment: false
+            )
+            if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
+              render_rate_limited(auth_precheck[:retry_after])
+              return
+            end
+          end
+
+          @current_mcp_token = bearer ? McpToken.authenticate(bearer) : nil
+          if @current_mcp_token
+            token_rate = RateLimiter.check!(
+              bucket: "internal",
+              identifier: "tok:#{@current_mcp_token.id}",
+              limit: config.mcp_rate_limit_per_minute
+            )
+            unless token_rate[:allowed]
+              render_rate_limited(token_rate[:retry_after])
+            end
+            return
+          end
+
+          if known_verified
+            ip_rate = RateLimiter.check!(
+              bucket: "internal",
+              identifier: "ip:#{client_ip}",
+              limit: config.mcp_rate_limit_per_minute
+            )
+            unless ip_rate[:allowed]
+              render_rate_limited(ip_rate[:retry_after])
+              return
+            end
+          end
 
           if record_auth_failure_and_check_throttled?(client_ip, config)
             return
@@ -150,6 +195,11 @@ module Sentrace
 
           response.set_header("WWW-Authenticate", 'Bearer realm="sentrace-internal"')
           render json: { error: "Unauthorized" }, status: :unauthorized
+        end
+
+        def extract_bearer_token
+          auth_header = request.headers["Authorization"].to_s
+          auth_header.bytesize <= 1024 ? auth_header[/\ABearer\s+(\S+)\z/i, 1] : nil
         end
 
         def record_auth_failure_and_check_throttled?(client_ip, config)
@@ -168,7 +218,7 @@ module Sentrace
         end
 
         def rate_limit_identifier
-          RequestSecurity.client_ip(request).presence || "unknown"
+          RequestSecurity.rate_limit_ip(request).presence || "unknown"
         end
 
         def render_rate_limited(retry_after)
@@ -232,7 +282,8 @@ module Sentrace
 
         def local_backend
           @local_backend ||= Mcp::LocalBackend.new(
-            environment_name: Sentrace.configuration.deployment_environment.to_s
+            environment_name: Sentrace.configuration.deployment_environment.to_s,
+            allowed_project_id: @current_mcp_token&.project_id
           )
         end
     end

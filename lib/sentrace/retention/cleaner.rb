@@ -49,14 +49,28 @@ module Sentrace
               <<~SQL.squish,
                 DELETE FROM sentrace_events
                 WHERE id IN (
-                  SELECT id FROM sentrace_events
-                  WHERE occurred_at < ? OR received_at < ?
-                  ORDER BY occurred_at ASC
+                  SELECT id FROM (
+                    (
+                      SELECT id FROM sentrace_events
+                      WHERE received_at < ?
+                      ORDER BY received_at ASC
+                      LIMIT ?
+                    )
+                    UNION
+                    (
+                      SELECT id FROM sentrace_events
+                      WHERE occurred_at < ?
+                      ORDER BY occurred_at ASC
+                      LIMIT ?
+                    )
+                  ) AS expired_events
                   LIMIT ?
                 )
               SQL
               cutoff,
+              batch_size,
               cutoff,
+              batch_size,
               batch_size
             ])
 

@@ -9,6 +9,9 @@ module Sentrace
           status: scalar_param(:status),
           level: scalar_param(:level),
           release: scalar_param(:release),
+          platform: scalar_param(:platform),
+          request_id: scalar_param(:request_id),
+          ingestion_source: scalar_param(:ingestion_source),
           since: scalar_param(:since),
           until: scalar_param(:until),
           limit: scalar_param(:limit),
@@ -33,13 +36,6 @@ module Sentrace
         )
         render json: payload
       end
-
-      private
-        def require_write_scope!
-          if @current_mcp_token&.read_only?
-            render json: { error: "Forbidden: read-only token cannot update issue status" }, status: :forbidden
-          end
-        end
     end
   end
 end

@@ -389,6 +389,7 @@ export class BrowserClient {
 }
 
 // Singleton hub state
+const MAX_SCOPE_STACK_DEPTH = 64;
 let activeClient: BrowserClient | null = null;
 let globalScope = new Scope();
 let lastCapturedEventId: string | undefined = undefined;
@@ -445,6 +446,9 @@ export function getIsolationScope(): Scope {
 
 export function withScope<T>(callback: (scope: Scope) => T): T {
   const forked = activeScope().clone();
+  if (scopeStack.length >= MAX_SCOPE_STACK_DEPTH) {
+    scopeStack.shift();
+  }
   scopeStack.push(forked);
   let isAsync = false;
   const popForked = (): void => {

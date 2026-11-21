@@ -46,6 +46,22 @@ module Sentrace
             request.env["REMOTE_ADDR"]
           end
         raw.to_s.strip
+      rescue ActionDispatch::RemoteIp::IpSpoofAttackError
+        request.env["REMOTE_ADDR"].to_s.strip
+      end
+
+      def rate_limit_ip(request, trust_forwarded_headers: Sentrace.configuration.trust_forwarded_headers)
+        raw = client_ip(request, trust_forwarded_headers: trust_forwarded_headers)
+        return nil if raw.empty?
+
+        addr = parse_ip(raw)
+        return raw unless addr
+
+        if addr.ipv6? && !addr.loopback?
+          "#{addr.mask(64)}/64"
+        else
+          addr.to_s
+        end
       end
 
       def loopback_host?(raw_host)
@@ -108,8 +124,8 @@ module Sentrace
 
         cleaned = raw_value.to_s.dup.force_encoding(Encoding::UTF_8).scrub
         cleaned.gsub!(/\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/, "")
-        cleaned.gsub!(/[\x00-\x1F\x7F\u0080-\u009F]/, " ")
-        cleaned.gsub!(/[\u00AD\u034F\u061C\u115F\u1160\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/, "")
+        cleaned.gsub!(/[\x00-\x1F\x7F\u0080-\u009F\u2028\u2029]/, " ")
+        cleaned.gsub!(/[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u2065\u2800\u3164\uFE00-\uFE0F\uFFA0\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/, "")
         cleaned.strip!
         max_chars ? cleaned[0, max_chars] : cleaned
       end

@@ -33,10 +33,14 @@ module Sentrace
       MAX_SAFE_INTEGER = (1 << 63) - 1
       MIN_SAFE_INTEGER = -(1 << 63)
       MAX_TIMESTAMP_STRING_BYTES = 64
+      MAX_BREADCRUMB_DATA_NODES = 256
+      MAX_BREADCRUMB_COLLECTION_ITEMS = 8
+      MAX_BREADCRUMB_DEPTH = 2
+      MAX_CONTEXT_NODES = 512
       ANSI_ESCAPE_REGEX = /\e(?:\[[0-9;?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\))/
-      UNSAFE_UNICODE_REGEX = /[\u00AD\u034F\u061C\u115F\u1160\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFE00-\uFE0F\uFEFF\uFFA0\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/
+      UNSAFE_UNICODE_REGEX = /[\p{Cf}\u034F\u115F\u1160\u17B4\u17B5\u180B-\u180F\u2065\u2800\u3164\uFE00-\uFE0F\uFFA0\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/
       DISALLOWED_MULTILINE_CONTROLS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u0080-\u009F]/
-      DISALLOWED_SINGLELINE_CONTROLS_REGEX = /[\x00-\x1F\x7F\u0080-\u009F]/
+      DISALLOWED_SINGLELINE_CONTROLS_REGEX = /[\x00-\x1F\x7F\u0080-\u009F\u2028\u2029]/
 
       LEVEL_MAP = {
         "debug" => :debug,
@@ -71,7 +75,7 @@ module Sentrace
           str.gsub!(UNSAFE_UNICODE_REGEX, "")
           if allow_newlines
             str.gsub!("\r\n", "\n")
-            str.tr!("\r", "\n")
+            str.tr!("\r\u2028\u2029", "\n\n\n")
             str.gsub!(DISALLOWED_MULTILINE_CONTROLS_REGEX, "")
           else
             str.gsub!(DISALLOWED_SINGLELINE_CONTROLS_REGEX, " ")
@@ -114,7 +118,7 @@ module Sentrace
 
         validated_source = ALLOWED_INGESTION_SOURCES.include?(ingestion_source.to_s) ? ingestion_source.to_s : "in_process"
         event_id = extract_event_id(raw_event, envelope_headers)
-        occurred_at = extract_timestamp(raw_event["timestamp"], fallback: received_at)
+        occurred_at = extract_timestamp(raw_event["timestamp"], fallback: received_at, ingestion_source: validated_source)
         level = normalize_level(raw_event["level"])
 
         exception_data = extract_exception(raw_event["exception"])
@@ -168,12 +172,19 @@ module Sentrace
           normalized
         end
 
-        def extract_timestamp(raw_timestamp, fallback:)
+        def extract_timestamp(raw_timestamp, fallback:, ingestion_source: "in_process")
           fallback_utc = fallback.utc
           return fallback_utc if raw_timestamp.nil?
           return fallback_utc if raw_timestamp.is_a?(String) && raw_timestamp.strip.empty?
 
-          max_skew = @config.respond_to?(:max_future_clock_skew) && @config.max_future_clock_skew ? @config.max_future_clock_skew : 5.minutes
+          max_skew =
+            if ingestion_source == "http_dsn"
+              0
+            elsif @config.respond_to?(:max_future_clock_skew) && !@config.max_future_clock_skew.nil?
+              @config.max_future_clock_skew
+            else
+              0
+            end
           max_future = fallback_utc + max_skew
           min_past = fallback_utc - (@config.retention_period * 2)
 
@@ -310,7 +321,17 @@ module Sentrace
               []
             end
 
-          take_last_hashes(items, @config.max_breadcrumbs).map do |crumb|
+          candidates = take_last_hashes(items, @config.max_breadcrumbs)
+          return [] if candidates.empty?
+
+          max_bytes = @config.respond_to?(:max_breadcrumbs_bytes) && @config.max_breadcrumbs_bytes ? @config.max_breadcrumbs_bytes.to_i : 24_576
+          node_budget = { remaining: MAX_BREADCRUMB_DATA_NODES }
+          kept_reversed = []
+          total_bytes = 2 # "[]"
+
+          candidates.reverse_each do |crumb|
+            break if (max_bytes - total_bytes) < 8
+
             entry = {
               "timestamp" => normalize_breadcrumb_timestamp(crumb["timestamp"]),
               "type" => truncate_chars(crumb["type"], 64),
@@ -319,17 +340,39 @@ module Sentrace
               "message" => self.class.scrub_and_truncate_bytes(crumb["message"], 1024, allow_newlines: true)
             }.compact
 
-            if crumb["data"].is_a?(Hash) && crumb["data"].any?
-              entry["data"] = crumb["data"].first(16).to_h do |k, v|
-                [
-                  self.class.scrub_and_truncate_bytes(k.to_s, 64, allow_newlines: false),
-                  bound_breadcrumb_data_value(v)
-                ]
+            if crumb["data"].is_a?(Hash) && crumb["data"].any? && node_budget[:remaining].positive?
+              data_hash = {}
+              crumb["data"].first(16).each do |k, v|
+                break if node_budget[:remaining] <= 0
+
+                clean_k = self.class.scrub_and_truncate_bytes(k.to_s, 64, allow_newlines: false)
+                next if clean_k.nil? || clean_k.empty?
+
+                data_hash[clean_k] = bound_breadcrumb_data_value(v, depth: 1, node_budget: node_budget)
               end
+              entry["data"] = data_hash if data_hash.any?
             end
 
-            entry
+            next if entry.empty?
+
+            separator_bytes = kept_reversed.empty? ? 0 : 1
+            entry_bytes = JSON.generate(entry).bytesize
+            if (total_bytes + separator_bytes + entry_bytes) <= max_bytes
+              kept_reversed << entry
+              total_bytes += separator_bytes + entry_bytes
+            elsif entry.key?("data")
+              without_data = entry.except("data")
+              next if without_data.empty?
+
+              reduced_bytes = JSON.generate(without_data).bytesize
+              if (total_bytes + separator_bytes + reduced_bytes) <= max_bytes
+                kept_reversed << without_data
+                total_bytes += separator_bytes + reduced_bytes
+              end
+            end
           end
+
+          kept_reversed.reverse!
         end
 
         def extract_tags(raw_tags, raw_request: nil)
@@ -415,12 +458,14 @@ module Sentrace
           bounded = {}
           max_bytes = @config.max_context_bytes
           max_scan = [ @config.max_context_entries * 2, 64 ].max
+          node_budget = { remaining: MAX_CONTEXT_NODES }
           scanned = 0
           total_bytes = 2 # "{}"
 
           source.each do |ctx_key, ctx_val|
             break if bounded.size >= @config.max_context_entries || scanned >= max_scan
             break if (max_bytes - total_bytes) < 8
+            break if node_budget[:remaining] <= 0
 
             scanned += 1
             next unless ctx_val.is_a?(Hash)
@@ -429,7 +474,7 @@ module Sentrace
             key_str = self.class.truncate_utf8_bytes(cleaned_key, 64)
             next if key_str.nil? || key_str.empty? || bounded.key?(key_str)
 
-            bounded_val = bound_nested_value(ctx_val, depth: 0)
+            bounded_val = bound_nested_value(ctx_val, depth: 0, node_budget: node_budget)
             entry_bytes = JSON.generate(key_str => bounded_val).bytesize - 2
             separator_bytes = bounded.empty? ? 0 : 1
             if (total_bytes + separator_bytes + entry_bytes) <= max_bytes
@@ -441,17 +486,31 @@ module Sentrace
           bounded
         end
 
-        def bound_nested_value(value, depth:)
+        def bound_nested_value(value, depth:, node_budget: nil)
+          if node_budget
+            node_budget[:remaining] -= 1
+            return "[TRUNCATED]" if node_budget[:remaining] < 0
+          end
           return "[TRUNCATED]" if depth > 3
 
           case value
           when Hash
-            value.first(16).to_h do |k, v|
+            out = {}
+            value.first(16).each do |k, v|
+              break if node_budget && node_budget[:remaining] <= 0
+
               cleaned_k = self.class.strip_unsafe_characters(k.to_s, allow_newlines: false).to_s
-              [ self.class.truncate_utf8_bytes(cleaned_k, 64), bound_nested_value(v, depth: depth + 1) ]
+              out[self.class.truncate_utf8_bytes(cleaned_k, 64)] = bound_nested_value(v, depth: depth + 1, node_budget: node_budget)
             end
+            out
           when Array
-            value.first(16).map { |v| bound_nested_value(v, depth: depth + 1) }
+            out = []
+            value.first(16).each do |v|
+              break if node_budget && node_budget[:remaining] <= 0
+
+              out << bound_nested_value(v, depth: depth + 1, node_budget: node_budget)
+            end
+            out
           when Numeric
             safe_numeric_value(value)
           when TrueClass, FalseClass, NilClass
@@ -461,10 +520,31 @@ module Sentrace
           end
         end
 
-        def bound_breadcrumb_data_value(value)
+        def bound_breadcrumb_data_value(value, depth: 1, node_budget: nil)
+          if node_budget
+            node_budget[:remaining] -= 1
+            return "[TRUNCATED]" if node_budget[:remaining] < 0
+          end
+          return "[TRUNCATED]" if depth > MAX_BREADCRUMB_DEPTH
+
           case value
-          when Hash, Array
-            bound_nested_value(value, depth: 1)
+          when Hash
+            out = {}
+            value.first(MAX_BREADCRUMB_COLLECTION_ITEMS).each do |k, v|
+              break if node_budget && node_budget[:remaining] <= 0
+
+              cleaned_k = self.class.strip_unsafe_characters(k.to_s, allow_newlines: false).to_s
+              out[self.class.truncate_utf8_bytes(cleaned_k, 64)] = bound_breadcrumb_data_value(v, depth: depth + 1, node_budget: node_budget)
+            end
+            out
+          when Array
+            out = []
+            value.first(MAX_BREADCRUMB_COLLECTION_ITEMS).each do |v|
+              break if node_budget && node_budget[:remaining] <= 0
+
+              out << bound_breadcrumb_data_value(v, depth: depth + 1, node_budget: node_budget)
+            end
+            out
           when Numeric
             safe_numeric_value(value)
           when TrueClass, FalseClass, NilClass

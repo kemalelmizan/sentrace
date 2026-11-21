@@ -28,30 +28,43 @@ module Sentrace
       end
 
       client_ip = rate_limit_identifier
+      raw_bearer = extract_bearer_token
+      known_verified = raw_bearer && McpToken.recently_verified_raw_token?(raw_bearer)
 
-      rate_result = RateLimiter.check!(
-        bucket: "mcp",
-        identifier: client_ip,
-        limit: config.mcp_rate_limit_per_minute
-      )
-      unless rate_result[:allowed]
-        return render_rate_limited(rate_result[:retry_after])
-      end
-
-      if config.mcp_auth_failure_limit_per_minute
-        auth_precheck = RateLimiter.check!(
-          bucket: "mcp_auth_fail",
-          identifier: client_ip,
-          limit: config.mcp_auth_failure_limit_per_minute,
-          increment: false
+      unless known_verified
+        rate_result = RateLimiter.check!(
+          bucket: "mcp",
+          identifier: "ip:#{client_ip}",
+          limit: config.mcp_rate_limit_per_minute
         )
-        if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
-          return render_rate_limited(auth_precheck[:retry_after])
+        unless rate_result[:allowed]
+          return render_rate_limited(rate_result[:retry_after])
+        end
+
+        if config.mcp_auth_failure_limit_per_minute
+          auth_precheck = RateLimiter.check!(
+            bucket: "mcp_auth_fail",
+            identifier: client_ip,
+            limit: config.mcp_auth_failure_limit_per_minute,
+            increment: false
+          )
+          if auth_precheck[:count] >= config.mcp_auth_failure_limit_per_minute
+            return render_rate_limited(auth_precheck[:retry_after])
+          end
         end
       end
 
-      token_record = authenticate_bearer_token
+      token_record = raw_bearer ? McpToken.authenticate(raw_bearer) : nil
       unless token_record
+        if known_verified
+          ip_rate = RateLimiter.check!(
+            bucket: "mcp",
+            identifier: "ip:#{client_ip}",
+            limit: config.mcp_rate_limit_per_minute
+          )
+          return render_rate_limited(ip_rate[:retry_after]) unless ip_rate[:allowed]
+        end
+
         if config.mcp_auth_failure_limit_per_minute
           fail_result = RateLimiter.check!(
             bucket: "mcp_auth_fail",
@@ -68,8 +81,21 @@ module Sentrace
         return render json: { error: "Unauthorized" }, status: :unauthorized
       end
 
+      token_rate = RateLimiter.check!(
+        bucket: "mcp",
+        identifier: "tok:#{token_record.id}",
+        limit: config.mcp_rate_limit_per_minute
+      )
+      unless token_rate[:allowed]
+        return render_rate_limited(token_rate[:retry_after])
+      end
+
       mcp_server = Mcp::Server.build(
-        dispatcher: build_node_dispatcher(config, read_only: token_record.read_only?)
+        dispatcher: build_node_dispatcher(
+          config,
+          read_only: token_record.read_only?,
+          allowed_project_id: token_record.project_id
+        )
       )
       transport = ::MCP::Server::Transports::StreamableHTTPTransport.new(
         mcp_server,
@@ -90,7 +116,7 @@ module Sentrace
       end
 
       def rate_limit_identifier
-        RequestSecurity.client_ip(request).presence || "unknown"
+        RequestSecurity.rate_limit_ip(request).presence || "unknown"
       end
 
       def render_rate_limited(retry_after)
@@ -98,23 +124,26 @@ module Sentrace
         render json: { error: "Rate limit exceeded" }, status: :too_many_requests
       end
 
-      def authenticate_bearer_token
+      def extract_bearer_token
         auth_header = request.headers["Authorization"].to_s
         return nil if auth_header.bytesize > 1024
 
         match = auth_header.match(/\ABearer\s+(\S+)\z/i)
-        return nil unless match
-
-        McpToken.authenticate(match[1])
+        match ? match[1] : nil
       end
 
-      def build_node_dispatcher(config, read_only: false)
+      def build_node_dispatcher(config, read_only: false, allowed_project_id: nil)
         env_label = config.deployment_environment.to_s.strip
         env_label = "local" if env_label.empty?
 
         node_config = config.dup
         node_config.environments = { env_label.to_sym => { transport: :local } }
-        Mcp::Dispatcher.new(config: node_config, remote_client: nil, read_only: read_only)
+        Mcp::Dispatcher.new(
+          config: node_config,
+          remote_client: nil,
+          read_only: read_only,
+          allowed_project_id: allowed_project_id
+        )
       end
 
       def write_rack_response(rack_status, rack_headers, rack_body)

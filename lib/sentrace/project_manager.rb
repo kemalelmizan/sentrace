@@ -25,24 +25,27 @@ module Sentrace
       projects
     end
 
-    def create(slug:, name: nil)
+    def create(slug:, name: nil, secret: nil, generate_secret: false)
       if slug.nil? || slug.to_s.strip.empty?
         raise ArgumentError, "Project slug is required (usage: bin/rails \"sentrace:projects:create[my-app]\")"
       end
 
-      project, key = Project.provision!(slug: slug, name: name)
-      dsn = Dsn.build(base_url: @base_url, public_key: key.public_key, project_id: project.id)
+      resolved_secret = secret.present? ? secret.to_s : (generate_secret ? SecureRandom.hex(24) : nil)
+      project, key = Project.provision!(slug: slug, name: name, secret: resolved_secret)
+      public_dsn = Dsn.build(base_url: @base_url, public_key: key.public_key, project_id: project.id)
+      full_dsn = resolved_secret ? Dsn.build(base_url: @base_url, public_key: key.public_key, secret_key: resolved_secret, project_id: project.id) : public_dsn
 
       @io.puts "Created Sentrace project:"
       @io.puts "  ID:         #{project.id}"
       @io.puts "  Slug:       #{project.slug}"
       @io.puts "  Name:       #{project.name}"
       @io.puts "  Public Key: #{key.public_key}"
-      @io.puts "  DSN:        #{dsn}"
+      @io.puts "  DSN:        #{full_dsn}"
+      @io.puts "  Public DSN: #{public_dsn}" if resolved_secret
       project
     end
 
-    def rotate_key(slug:)
+    def rotate_key(slug:, secret: nil, generate_secret: false)
       normalized_slug = slug.to_s.strip.downcase
       if normalized_slug.empty?
         raise ArgumentError, "Project slug is required (usage: bin/rails \"sentrace:projects:rotate_key[my-app]\")"
@@ -53,12 +56,15 @@ module Sentrace
         raise ProjectNotFoundError, "Sentrace project '#{normalized_slug}' not found."
       end
 
-      new_key = project.rotate_key!
-      dsn = Dsn.build(base_url: @base_url, public_key: new_key.public_key, project_id: project.id)
+      resolved_secret = secret.present? ? secret.to_s : (generate_secret ? SecureRandom.hex(24) : nil)
+      new_key = project.rotate_key!(secret: resolved_secret)
+      public_dsn = Dsn.build(base_url: @base_url, public_key: new_key.public_key, project_id: project.id)
+      full_dsn = resolved_secret ? Dsn.build(base_url: @base_url, public_key: new_key.public_key, secret_key: resolved_secret, project_id: project.id) : public_dsn
 
       @io.puts "Rotated DSN key for '#{project.slug}' (id=#{project.id}):"
       @io.puts "  Public Key: #{new_key.public_key}"
-      @io.puts "  DSN:        #{dsn}"
+      @io.puts "  DSN:        #{full_dsn}"
+      @io.puts "  Public DSN: #{public_dsn}" if resolved_secret
       new_key
     end
   end

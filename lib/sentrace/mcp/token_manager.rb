@@ -32,14 +32,15 @@ module Sentrace
         tokens
       end
 
-      def create(name: nil, expires_at: nil, expires_in: nil, scopes: nil, read_only: false)
+      def create(name: nil, expires_at: nil, expires_in: nil, scopes: nil, read_only: false, project_id: nil)
         resolved_name = normalize_name_or_default(name)
         record, raw_token = McpToken.issue!(
           name: resolved_name,
           expires_at: expires_at,
           expires_in: expires_in,
           scopes: scopes,
-          read_only: read_only
+          read_only: read_only,
+          project_id: project_id
         )
 
         @io.puts "Created Sentrace MCP token (store securely; plaintext is shown only once):"
@@ -47,19 +48,21 @@ module Sentrace
         @io.puts "  Name:    #{record.name}"
         @io.puts "  Prefix:  #{record.token_prefix}"
         @io.puts "  Scopes:  #{record.scopes}"
+        @io.puts "  Project: #{record.project_id || '(all)'}"
         @io.puts "  Expires: #{record.expires_at&.utc&.iso8601 || '(never)'}"
         @io.puts "  Token:   #{raw_token}"
         [ record, raw_token ]
       end
 
-      def rotate(name: nil, expires_at: nil, expires_in: nil, scopes: nil, read_only: false)
+      def rotate(name: nil, expires_at: nil, expires_in: nil, scopes: nil, read_only: false, project_id: nil)
         resolved_name = normalize_name_or_default(name)
         record, raw_token = McpToken.rotate!(
           name: resolved_name,
           expires_at: expires_at,
           expires_in: expires_in,
           scopes: scopes,
-          read_only: read_only
+          read_only: read_only,
+          project_id: project_id
         )
 
         @io.puts "Rotated Sentrace MCP token for '#{record.name}' (store securely; plaintext is shown only once):"
@@ -67,6 +70,7 @@ module Sentrace
         @io.puts "  Name:    #{record.name}"
         @io.puts "  Prefix:  #{record.token_prefix}"
         @io.puts "  Scopes:  #{record.scopes}"
+        @io.puts "  Project: #{record.project_id || '(all)'}"
         @io.puts "  Expires: #{record.expires_at&.utc&.iso8601 || '(never)'}"
         @io.puts "  Token:   #{raw_token}"
         [ record, raw_token ]

@@ -33,7 +33,11 @@ module Sentrace
 
         private
           def env_read_only?
-            ENV["SENTRACE_MCP_READ_ONLY"].to_s.casecmp("true").zero?
+            return true if ENV["SENTRACE_MCP_READ_ONLY"].to_s.casecmp("true").zero?
+            return false if ENV["SENTRACE_MCP_READ_ONLY"].to_s.casecmp("false").zero?
+            return false if ENV["SENTRACE_MCP_ALLOW_WRITE"].to_s.casecmp("true").zero?
+
+            true
           end
       end
 

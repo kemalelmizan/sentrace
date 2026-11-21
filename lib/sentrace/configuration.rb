@@ -25,10 +25,17 @@ module Sentrace
       ActionController::RoutingError
       ActionController::UnknownFormat
       ActionController::UnknownHttpMethod
+      ActionDispatch::Http::MimeNegotiation::InvalidType
       ActionDispatch::Http::Parameters::ParseError
+      ActionDispatch::RemoteIp::IpSpoofAttackError
       ActiveRecord::RecordNotFound
       CGI::Session::CookieStore::TamperedWithCookie
       Mime::Type::InvalidMimeType
+      Rack::Multipart::BoundaryTooLongError
+      Rack::Multipart::EmptyContentError
+      Rack::Multipart::Error
+      Rack::Multipart::MultipartPartLimitError
+      Rack::Multipart::MultipartTotalPartLimitError
       Rack::QueryParser::InvalidParameterError
       Rack::QueryParser::ParameterTypeError
     ].freeze
@@ -41,16 +48,17 @@ module Sentrace
     DEFAULT_MAX_ENVELOPE_ITEMS = 50
     DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE = 300
     DEFAULT_INGESTION_PROJECT_RATE_LIMIT_PER_MINUTE = 3_000
-    DEFAULT_MAX_FUTURE_CLOCK_SKEW = 5.minutes
+    DEFAULT_IN_PROCESS_RATE_LIMIT_PER_MINUTE = 1_000
+    DEFAULT_MAX_FUTURE_CLOCK_SKEW = 0.seconds
 
     POSITIVE_NUMERIC_ATTRIBUTES = %i[
       retention_period
       orphan_issue_retention_period
-      max_future_clock_skew
       max_envelope_size
       max_message_bytes
       max_stack_frames
       max_breadcrumbs
+      max_breadcrumbs_bytes
       max_tags
       max_tag_key_bytes
       max_tag_value_bytes
@@ -59,6 +67,10 @@ module Sentrace
       max_event_data_bytes
       remote_timeout
       remote_ping_timeout
+    ].freeze
+
+    NON_NEGATIVE_NUMERIC_ATTRIBUTES = %i[
+      max_future_clock_skew
     ].freeze
 
     POSITIVE_INTEGER_ATTRIBUTES = %i[
@@ -104,6 +116,7 @@ module Sentrace
       :max_message_bytes,
       :max_stack_frames,
       :max_breadcrumbs,
+      :max_breadcrumbs_bytes,
       :max_tags,
       :max_tag_key_bytes,
       :max_tag_value_bytes,
@@ -122,6 +135,7 @@ module Sentrace
       :mcp_auth_failure_limit_per_minute,
       :ingestion_rate_limit_per_minute,
       :ingestion_project_rate_limit_per_minute,
+      :in_process_rate_limit_per_minute,
       :user_hash_secret,
       :remote_timeout,
       :remote_ping_timeout
@@ -156,6 +170,7 @@ module Sentrace
       @max_message_bytes = 4.kilobytes
       @max_stack_frames = 50
       @max_breadcrumbs = 20
+      @max_breadcrumbs_bytes = 24.kilobytes
       @max_tags = 32
       @max_tag_key_bytes = 64
       @max_tag_value_bytes = 256
@@ -174,6 +189,7 @@ module Sentrace
       @mcp_auth_failure_limit_per_minute = 20
       @ingestion_rate_limit_per_minute = DEFAULT_INGESTION_RATE_LIMIT_PER_MINUTE
       @ingestion_project_rate_limit_per_minute = DEFAULT_INGESTION_PROJECT_RATE_LIMIT_PER_MINUTE
+      @in_process_rate_limit_per_minute = DEFAULT_IN_PROCESS_RATE_LIMIT_PER_MINUTE
       @user_hash_secret = nil
       @remote_timeout = 5.0
       @remote_ping_timeout = 2.5
@@ -221,8 +237,23 @@ module Sentrace
     def validate!
       POSITIVE_NUMERIC_ATTRIBUTES.each do |attr|
         val = public_send(attr)
-        unless val.is_a?(Numeric) && val.positive?
+        valid = val.is_a?(Numeric) &&
+          (!val.respond_to?(:nan?) || !val.nan?) &&
+          (!val.respond_to?(:infinite?) || !val.infinite?) &&
+          val.positive?
+        unless valid
           raise ConfigurationError, "#{attr} must be a positive number (got #{val.inspect})"
+        end
+      end
+
+      NON_NEGATIVE_NUMERIC_ATTRIBUTES.each do |attr|
+        val = public_send(attr)
+        valid = val.is_a?(Numeric) &&
+          (!val.respond_to?(:nan?) || !val.nan?) &&
+          (!val.respond_to?(:infinite?) || !val.infinite?) &&
+          val >= 0
+        unless valid
+          raise ConfigurationError, "#{attr} must be a non-negative number (got #{val.inspect})"
         end
       end
 
@@ -263,6 +294,7 @@ module Sentrace
       validate_optional_positive_integer!(:mcp_auth_failure_limit_per_minute, mcp_auth_failure_limit_per_minute)
       validate_optional_positive_integer!(:ingestion_rate_limit_per_minute, ingestion_rate_limit_per_minute)
       validate_optional_positive_integer!(:ingestion_project_rate_limit_per_minute, ingestion_project_rate_limit_per_minute)
+      validate_optional_positive_integer!(:in_process_rate_limit_per_minute, in_process_rate_limit_per_minute)
       validate_boolean!(:allow_request_base_url_fallback, allow_request_base_url_fallback)
       validate_boolean!(:trust_forwarded_headers, trust_forwarded_headers)
 

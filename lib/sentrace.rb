@@ -39,36 +39,41 @@ require "sentrace/test_helpers"
 require "sentrace/engine"
 
 module Sentrace
+  CONFIG_OVERRIDE_KEY = :sentrace_configuration_override
   autoload :SentryTransport, "sentrace/sentry_transport"
 
   class << self
     def configuration
-      @configuration ||= Configuration.new
+      Thread.current[CONFIG_OVERRIDE_KEY] || (@configuration ||= Configuration.new)
     end
 
     def configure
-      yield(configuration) if block_given?
-      configuration.validate!
+      target = configuration
+      yield(target) if block_given?
+      target.validate!
       CaptureDispatcher.clear_cache!
-      Breadcrumbs.apply_configuration!(configuration) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
-      configuration
+      Breadcrumbs.apply_configuration!(target) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
+      target
     end
 
     def reset_configuration!
+      Thread.current[CONFIG_OVERRIDE_KEY] = nil
       CaptureDispatcher.clear_cache!
       FrontendDsnResolver.clear_cache!
       RateLimiter.reset!
+      McpToken.clear_verified_cache! if defined?(McpToken) && McpToken.respond_to?(:clear_verified_cache!)
       Breadcrumbs.reset! if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:reset!)
       @configuration = Configuration.new
     end
 
-    def with_configuration(**overrides)
+    def with_configuration(reset_rate_limiter: false, **overrides)
       raise ArgumentError, "Sentrace.with_configuration requires a block" unless block_given?
 
-      previous_config = configuration.dup
+      previous_override = Thread.current[CONFIG_OVERRIDE_KEY]
+      base_config = (previous_override || configuration).dup
       previous_stack = Thread.current[Scope::SCOPE_STACK_KEY]&.map(&:deep_clone)
       begin
-        isolated_config = previous_config.dup
+        isolated_config = base_config.dup
         overrides.each do |key, value|
           setter = :"#{key}="
           unless isolated_config.respond_to?(setter)
@@ -77,26 +82,27 @@ module Sentrace
           isolated_config.public_send(setter, value)
         end
         isolated_config.validate!
-        @configuration = isolated_config
+        Thread.current[CONFIG_OVERRIDE_KEY] = isolated_config
         CaptureDispatcher.clear_cache!
         FrontendDsnResolver.clear_cache!
-        RateLimiter.reset!
+        RateLimiter.reset! if reset_rate_limiter
         Integrations::ExceptionDeduplicator.reset!
         Scope.clear!
         Breadcrumbs.apply_configuration!(isolated_config) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
         yield(isolated_config)
       ensure
-        @configuration = previous_config
+        Thread.current[CONFIG_OVERRIDE_KEY] = previous_override
+        restored = configuration
         CaptureDispatcher.clear_cache!
         FrontendDsnResolver.clear_cache!
-        RateLimiter.reset!
+        RateLimiter.reset! if reset_rate_limiter
         Integrations::ExceptionDeduplicator.reset!
         if previous_stack
           Thread.current[Scope::SCOPE_STACK_KEY] = previous_stack
         else
           Scope.clear!
         end
-        Breadcrumbs.apply_configuration!(previous_config) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
+        Breadcrumbs.apply_configuration!(restored) if defined?(Breadcrumbs) && Breadcrumbs.respond_to?(:apply_configuration!)
       end
     end
 

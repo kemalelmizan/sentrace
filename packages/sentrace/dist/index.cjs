@@ -68,7 +68,7 @@ const DEFAULT_SENSITIVE_QUERY_KEYS = [
   "assertion"
 ];
 
-const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.-])(?:ssn|otp|totp|sig|jwt)(?:$|[_.-])/;
+const SENSITIVE_BOUNDED_QUERY_KEY_REGEX = /(?:^|[_.\-[\]])(?:ssn|otp|totp|sig|jwt)(?:$|[_.\-[\]])/;
 
 const AUTH_SESSION_EXACT_KEYS = [
   "session",
@@ -168,12 +168,24 @@ function isSameOrAllowedOrigin(
   if (!trimmed) {
     return false;
   }
-  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed) && !/^[/\\]{2}/.test(trimmed)) {
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmed);
+  const isHttpSchemeWithSlashes = /^https?:\/\//i.test(trimmed);
+  if (hasScheme && !isHttpSchemeWithSlashes) {
+    return false;
+  }
+  if (!isHttpSchemeWithSlashes && !/^[/\\]{2}/.test(trimmed)) {
     return true;
   }
 
   try {
-    const targetOrigin = new URL(trimmed, pageHref || "http://localhost").origin;
+    const parsedTarget = new URL(trimmed, pageHref || "http://localhost");
+    if (parsedTarget.protocol !== "http:" && parsedTarget.protocol !== "https:") {
+      return false;
+    }
+    const targetOrigin = parsedTarget.origin;
+    if (!targetOrigin || targetOrigin === "null") {
+      return false;
+    }
     if (pageHref) {
       try {
         if (new URL(pageHref).origin === targetOrigin) {
@@ -1988,6 +2000,7 @@ class BrowserClient {
 }
 
 // Singleton hub state
+const MAX_SCOPE_STACK_DEPTH = 64;
 let activeClient                       = null;
 let globalScope = new Scope();
 let lastCapturedEventId                     = undefined;
@@ -2044,6 +2057,9 @@ function getIsolationScope()        {
 
 function withScope   (callback                     )    {
   const forked = activeScope().clone();
+  if (scopeStack.length >= MAX_SCOPE_STACK_DEPTH) {
+    scopeStack.shift();
+  }
   scopeStack.push(forked);
   let isAsync = false;
   const popForked = ()       => {

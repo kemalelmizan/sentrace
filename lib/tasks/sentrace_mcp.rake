@@ -1,5 +1,5 @@
 namespace :sentrace do
-  desc "Run the Sentrace Model Context Protocol (MCP) server over stdio"
+  desc "Run the Sentrace Model Context Protocol (MCP) server over stdio (read-only by default; set SENTRACE_MCP_ALLOW_WRITE=true to allow status updates)"
   task mcp: :environment do
     Sentrace::Mcp::StdioRunner.run
   end
@@ -11,7 +11,7 @@ namespace :sentrace do
     end
 
     namespace :tokens do
-      desc "Issue a new Sentrace MCP bearer token (read-only by default; pass WRITE=true, ADMIN=true, or SCOPES=...)"
+      desc "Issue a new Sentrace MCP bearer token (read-only by default; pass WRITE=true, ADMIN=true, SCOPES=..., or PROJECT=...)"
       task :create, [ :name ] => :environment do |_task, args|
         read_only = ENV["READ_ONLY"].to_s.casecmp("true").zero?
         write_flag = ENV["WRITE"].to_s.casecmp("true").zero?
@@ -23,12 +23,14 @@ namespace :sentrace do
         end
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
+        project_ref = ENV["PROJECT"]&.strip.presence
 
         Sentrace::Mcp::TokenManager.new.create(
           name: args[:name],
           expires_in: expires_in,
           scopes: scopes.presence,
-          read_only: read_only
+          read_only: read_only,
+          project_id: project_ref
         )
       rescue ArgumentError, ActiveRecord::RecordInvalid => e
         abort e.message
@@ -46,12 +48,14 @@ namespace :sentrace do
         end
         expires_in_days = ENV["EXPIRES_IN_DAYS"]&.strip
         expires_in = expires_in_days && !expires_in_days.empty? ? Integer(expires_in_days, 10).days : nil
+        project_ref = ENV["PROJECT"]&.strip.presence
 
         Sentrace::Mcp::TokenManager.new.rotate(
           name: args[:name],
           expires_in: expires_in,
           scopes: scopes.presence,
-          read_only: read_only
+          read_only: read_only,
+          project_id: project_ref
         )
       rescue ArgumentError, ActiveRecord::RecordInvalid => e
         abort e.message
